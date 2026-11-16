@@ -1,0 +1,39 @@
+[project]
+name = "bizgraph"
+version = "0.1.0"
+description = "AU/NZ business graph: ontology, entity resolution and lookup"
+requires-python = ">=3.11"
+dependencies = [
+  "duckdb>=1.1",
+  "rapidfuzz>=3.9",
+  "lxml>=5.2",
+  "requests>=2.32",
+  "pyyaml>=6.0",
+  "pydantic>=2.7",
+  "fastapi>=0.111",
+  "uvicorn>=0.30",
+  "streamlit>=1.36",
+  "SPARQLWrapper>=2.0",
+  "rdflib>=7.0",
+  "pyshacl>=0.26",
+  "pandas>=2.2",
+  "pyarrow>=16.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2"]
+semantic = ["sentence-transformers>=3.0"]
+
+[project.scripts]
+bizgraph = "bizgraph.cli:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

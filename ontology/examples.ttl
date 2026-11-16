@@ -1,0 +1,335 @@
+# =============================================================================
+# bizgraph example data. ALL NAMES AND IDENTIFIERS ARE SYNTHETIC: the ABNs,
+# ACNs and LEIs pass their checksums but were generated for this file and
+# are not meant to describe any real business or person.
+#
+# Plain Turtle so every tool can read it; the "GRAPH" comment above each block
+# names the named graph the exporter would write it into.
+#
+# Contents
+#   A. Snapshot descriptions (one per source graph)
+#   B. Source records
+#   C. Canonical parties (incl. a person, and the deliberate violation:
+#      ACN 610005555 claimed by two organisations with different names)
+#   D. Facts: cancelled AFSL, ban on a person, GLEIF ownership chain
+#      SCA -> Beta -> Gamma -> Beta (3 levels, cycles at the top),
+#      an affiliation, an unattributed ACCC notice
+#   E. Links and an abstention (matcher version m-2026.11.1)
+# Expected SHACL result: exactly two violations, both from the ACN
+# uniqueness constraint, focus nodes urn:abn:23610005555 and
+# urn:abn:55610004441. Everything else conforms, including the cycle.
+# =============================================================================
+
+@prefix bg:   <https://w3id.org/bizgraph/ont#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+# -----------------------------------------------------------------------------
+# A. Snapshots. Each IRI is also the named graph IRI holding its records.
+# -----------------------------------------------------------------------------
+# GRAPH <urn:graph:source:abr:2026-11-09>   (and likewise for each snapshot)
+
+<urn:graph:source:abr:2026-11-09> a bg:SourceSnapshot ;
+    bg:sourceId "abr" ; bg:snapshotDate "2026-11-09"^^xsd:date ;
+    bg:fileHash "3f1c9a0e" ; bg:recordsIn 1004211 .
+
+<urn:graph:source:asic_afsl:2026-11-10> a bg:SourceSnapshot ;
+    bg:sourceId "asic_afsl" ; bg:snapshotDate "2026-11-10"^^xsd:date ;
+    bg:fileHash "a81b22d4" ; bg:recordsIn 6702 .
+
+<urn:graph:source:asic_banned:2026-11-10> a bg:SourceSnapshot ;
+    bg:sourceId "asic_banned" ; bg:snapshotDate "2026-11-10"^^xsd:date ;
+    bg:fileHash "0be7712c" ; bg:recordsIn 1840 .
+
+<urn:graph:source:gleif_l2:2026-11-12> a bg:SourceSnapshot ;
+    bg:sourceId "gleif_l2" ; bg:snapshotDate "2026-11-12"^^xsd:date ;
+    bg:fileHash "99d0e3f7" ; bg:recordsIn 4120 .
+
+# -----------------------------------------------------------------------------
+# B. Source records (immutable, never deleted)
+# -----------------------------------------------------------------------------
+
+# GRAPH <urn:graph:source:abr:2026-11-09>
+<urn:src:abr:38610001119> a bg:SourceRecord ;
+    bg:sourceId "abr" ; bg:recordId "38610001119" ; bg:snapshotDate "2026-11-09"^^xsd:date ;
+    bg:contentHash "c0ffee0000000000000000000000a001" ;
+    bg:nameRaw "SOUTHERN CROSS ADVISORY PTY LTD" ; bg:nameNorm "southern cross advisory" ;
+    bg:partyTypeHint "organisation" ;
+    bg:abn "38610001119" ; bg:acn "610001119" .
+
+<urn:src:abr:23610005555> a bg:SourceRecord ;
+    bg:sourceId "abr" ; bg:recordId "23610005555" ; bg:snapshotDate "2026-11-09"^^xsd:date ;
+    bg:nameRaw "HARBOUR FREIGHT PTY LTD" ; bg:nameNorm "harbour freight" ;
+    bg:partyTypeHint "organisation" ;
+    bg:abn "23610005555" ; bg:acn "610005555" .
+
+<urn:src:abr:55610004441> a bg:SourceRecord ;
+    bg:sourceId "abr" ; bg:recordId "55610004441" ; bg:snapshotDate "2026-11-09"^^xsd:date ;
+    bg:nameRaw "HARBOURSIDE LOGISTICS PTY LTD" ; bg:nameNorm "harbourside logistics" ;
+    bg:partyTypeHint "organisation" ;
+    # The source asserts an ACN that already belongs to Harbour Freight.
+    bg:abn "55610004441" ; bg:acn "610005555" .
+
+# GRAPH <urn:graph:source:asic_company:2026-11-09>
+<urn:src:asic_company:610001119> a bg:SourceRecord ;
+    bg:sourceId "asic_company" ; bg:recordId "610001119" ; bg:snapshotDate "2026-11-09"^^xsd:date ;
+    bg:nameRaw "SOUTHERN CROSS ADVISORY PTY. LTD." ; bg:nameNorm "southern cross advisory" ;
+    bg:partyTypeHint "organisation" ;
+    bg:acn "610001119" ; bg:abn "38610001119" .
+
+# GRAPH <urn:graph:source:asic_liquidator:2026-11-10>
+<urn:src:asic_liquidator:RL-30471> a bg:SourceRecord ;
+    bg:sourceId "asic_liquidator" ; bg:recordId "RL-30471" ; bg:snapshotDate "2026-11-10"^^xsd:date ;
+    bg:nameRaw "Jordan Avery EXAMPLE" ; bg:nameNorm "jordan avery example" ;
+    bg:partyTypeHint "person" .
+
+# GRAPH <urn:graph:source:asic_afsl:2026-11-10>
+<urn:src:asic_afsl:512345> a bg:SourceRecord ;
+    bg:sourceId "asic_afsl" ; bg:recordId "512345" ; bg:snapshotDate "2026-11-10"^^xsd:date ;
+    bg:nameRaw "Southern Cross Advisory Pty Ltd" ; bg:nameNorm "southern cross advisory" ;
+    bg:partyTypeHint "organisation" ;
+    bg:abn "38610001119" .
+
+# GRAPH <urn:graph:source:asic_banned:2026-11-10>
+<urn:src:asic_banned:BD-0042> a bg:SourceRecord ;
+    bg:sourceId "asic_banned" ; bg:recordId "BD-0042" ; bg:snapshotDate "2026-11-10"^^xsd:date ;
+    bg:nameRaw "EXAMPLE, Jordan Avery" ; bg:nameNorm "jordan avery example" ;
+    bg:partyTypeHint "person" .
+
+# GRAPH <urn:graph:source:gleif_l1:2026-11-12>
+<urn:src:gleif_l1:9845EXAMPLE000000114> a bg:SourceRecord ;
+    bg:sourceId "gleif_l1" ; bg:recordId "9845EXAMPLE000000114" ; bg:snapshotDate "2026-11-12"^^xsd:date ;
+    bg:nameRaw "SOUTHERN CROSS ADVISORY PTY LTD" ; bg:nameNorm "southern cross advisory" ;
+    bg:partyTypeHint "organisation" ;
+    # GLEIF L1 carries the registration-authority entity id, here the ACN.
+    bg:lei "9845EXAMPLE000000114" ; bg:acn "610001119" .
+
+<urn:src:gleif_l1:9845EXAMPLE000000211> a bg:SourceRecord ;
+    bg:sourceId "gleif_l1" ; bg:recordId "9845EXAMPLE000000211" ; bg:snapshotDate "2026-11-12"^^xsd:date ;
+    bg:nameRaw "BETA REGIONAL HOLDINGS LIMITED" ; bg:nameNorm "beta regional holdings" ;
+    bg:partyTypeHint "organisation" ;
+    bg:lei "9845EXAMPLE000000211" .
+
+<urn:src:gleif_l1:9845EXAMPLE000000308> a bg:SourceRecord ;
+    bg:sourceId "gleif_l1" ; bg:recordId "9845EXAMPLE000000308" ; bg:snapshotDate "2026-11-12"^^xsd:date ;
+    bg:nameRaw "GAMMA GROUP INVESTMENTS LIMITED" ; bg:nameNorm "gamma group investments" ;
+    bg:partyTypeHint "organisation" ;
+    bg:lei "9845EXAMPLE000000308" .
+
+# GRAPH <urn:graph:source:gleif_l2:2026-11-12>  (one record per L2 relationship)
+<urn:src:gleif_l2:9845EXAMPLE000000114-DIRECT> a bg:SourceRecord ;
+    bg:sourceId "gleif_l2" ; bg:recordId "9845EXAMPLE000000114-DIRECT" ; bg:snapshotDate "2026-11-12"^^xsd:date .
+<urn:src:gleif_l2:9845EXAMPLE000000211-DIRECT> a bg:SourceRecord ;
+    bg:sourceId "gleif_l2" ; bg:recordId "9845EXAMPLE000000211-DIRECT" ; bg:snapshotDate "2026-11-12"^^xsd:date .
+<urn:src:gleif_l2:9845EXAMPLE000000308-DIRECT> a bg:SourceRecord ;
+    bg:sourceId "gleif_l2" ; bg:recordId "9845EXAMPLE000000308-DIRECT" ; bg:snapshotDate "2026-11-12"^^xsd:date .
+
+# GRAPH <urn:graph:source:accc:2026-11-14>
+<urn:src:accc:IN-2026-017> a bg:SourceRecord ;
+    bg:sourceId "accc" ; bg:recordId "IN-2026-017" ; bg:snapshotDate "2026-11-14"^^xsd:date ;
+    bg:nameRaw "Southern Cross Advisers" ; bg:nameNorm "southern cross advisers" ;
+    bg:partyTypeHint "unknown" .
+
+# -----------------------------------------------------------------------------
+# C. Canonical parties
+# -----------------------------------------------------------------------------
+# GRAPH <urn:graph:canonical>
+
+<urn:abn:38610001119> a bg:Organisation ;
+    bg:name "SOUTHERN CROSS ADVISORY PTY LTD" ; bg:nameNorm "southern cross advisory" ;
+    bg:abn "38610001119" ; bg:acn "610001119" ; bg:lei "9845EXAMPLE000000114" ;
+    bg:entityType "PRV" ; bg:registrationStatus "ACT" ;
+    bg:state "NSW" ; bg:postcode "2000" ; bg:anzsic "6419" ;
+    bg:registeredOn "2015-02-11"^^xsd:date ;
+    prov:wasDerivedFrom <urn:src:abr:38610001119>, <urn:src:asic_company:610001119> .
+
+# Foreign parents known only through GLEIF: IRI minted from the LEI.
+<urn:lei:9845EXAMPLE000000211> a bg:Organisation ;
+    bg:name "BETA REGIONAL HOLDINGS LIMITED" ; bg:nameNorm "beta regional holdings" ;
+    bg:lei "9845EXAMPLE000000211" ;
+    prov:wasDerivedFrom <urn:src:gleif_l1:9845EXAMPLE000000211> .
+
+<urn:lei:9845EXAMPLE000000308> a bg:Organisation ;
+    bg:name "GAMMA GROUP INVESTMENTS LIMITED" ; bg:nameNorm "gamma group investments" ;
+    bg:lei "9845EXAMPLE000000308" ;
+    prov:wasDerivedFrom <urn:src:gleif_l1:9845EXAMPLE000000308> .
+
+# A person, minted from a typed register (registered liquidators).
+<urn:party:person:6b1f0c2e9d> a bg:Person ;
+    bg:name "Jordan Avery EXAMPLE" ; bg:nameNorm "jordan avery example" ;
+    bg:givenNames "Jordan Avery" ; bg:familyName "EXAMPLE" ;
+    prov:wasDerivedFrom <urn:src:asic_liquidator:RL-30471> .
+
+# DELIBERATE VIOLATION: ACN 610005555 under two names / two ABNs.
+# Pipeline response: both parties and both records go to quarantine; the
+# parties stay separate; any link that would rest on this ACN abstains with
+# QUARANTINED_TARGET.
+<urn:abn:23610005555> a bg:Organisation ;
+    bg:name "HARBOUR FREIGHT PTY LTD" ; bg:nameNorm "harbour freight" ;
+    bg:abn "23610005555" ; bg:acn "610005555" ;
+    prov:wasDerivedFrom <urn:src:abr:23610005555> .
+
+<urn:abn:55610004441> a bg:Organisation ;
+    bg:name "HARBOURSIDE LOGISTICS PTY LTD" ; bg:nameNorm "harbourside logistics" ;
+    bg:abn "55610004441" ; bg:acn "610005555" ;
+    prov:wasDerivedFrom <urn:src:abr:55610004441> .
+
+# -----------------------------------------------------------------------------
+# D. Facts. Record-level properties live in the source graph; party-level
+#    role shortcuts (bg:licensee, bg:bannedParty, bg:owner, bg:owned,
+#    bg:member, bg:affiliatedWith) live in urn:graph:links:m-2026.11.1.
+# -----------------------------------------------------------------------------
+
+# GRAPH <urn:graph:source:asic_afsl:2026-11-10>
+# A cancelled AFSL (Q3, Q4).
+<urn:fact:asic_afsl:512345> a bg:Licence ;
+    bg:licenceNumber "512345" ; bg:licenceKind bg:AFSL ;
+    bg:licenceStatus "Cancelled" ;
+    bg:authorisation "Provide general financial product advice for deposit and payment products" ,
+                     "Deal in a financial product by arranging for another person to deal in securities" ;
+    bg:validFrom "2016-07-01"^^xsd:date ; bg:validTo "2026-09-30"^^xsd:date ;
+    bg:aboutRecord <urn:src:asic_afsl:512345> ;
+    prov:wasDerivedFrom <urn:src:asic_afsl:512345> .
+# GRAPH <urn:graph:links:m-2026.11.1>
+<urn:fact:asic_afsl:512345> bg:licensee <urn:abn:38610001119> .
+
+# GRAPH <urn:graph:source:asic_banned:2026-11-10>
+# A ban on a person (Q2).
+<urn:fact:asic_banned:BD-0042> a bg:Ban ;
+    bg:banType "Banned from providing financial services" ;
+    bg:validFrom "2025-06-01"^^xsd:date ; bg:validTo "2030-05-31"^^xsd:date ;
+    bg:aboutRecord <urn:src:asic_banned:BD-0042> ;
+    prov:wasDerivedFrom <urn:src:asic_banned:BD-0042> .
+# GRAPH <urn:graph:links:m-2026.11.1>
+<urn:fact:asic_banned:BD-0042> bg:bannedParty <urn:party:person:6b1f0c2e9d> .
+
+# GRAPH <urn:graph:source:asic_liquidator:2026-11-10>
+# The banned person acts for Southern Cross Advisory: SCA is 1 hop from a
+# banned party, and Beta (its parent) is 2 hops (Q2).
+<urn:fact:asic_liquidator:RL-30471:1> a bg:Affiliation ;
+    bg:relationshipKind bg:ACTS_FOR ;
+    bg:validFrom "2019-01-14"^^xsd:date ;
+    bg:aboutRecord <urn:src:asic_liquidator:RL-30471> ;
+    bg:counterpartyRecord <urn:src:asic_company:610001119> ;
+    prov:wasDerivedFrom <urn:src:asic_liquidator:RL-30471> .
+# GRAPH <urn:graph:links:m-2026.11.1>
+<urn:fact:asic_liquidator:RL-30471:1> bg:member <urn:party:person:6b1f0c2e9d> ;
+    bg:affiliatedWith <urn:abn:38610001119> .
+
+# GRAPH <urn:graph:source:gleif_l2:2026-11-12>
+# Ownership chain (Q1): SCA -> Beta -> Gamma -> Beta. Gamma reports Beta as
+# its direct parent, so the chain cycles after 3 levels. The traversal stops
+# when it revisits Beta and reports cycle=true; the schema does not forbid it.
+<urn:fact:gleif_l2:9845EXAMPLE000000114-DIRECT> a bg:Ownership ;
+    bg:relationshipKind bg:IS_DIRECTLY_CONSOLIDATED_BY ;
+    bg:relationshipStatus "ACTIVE" ;
+    bg:ownershipPercentage 100.0 ;
+    bg:validFrom "2018-03-31"^^xsd:date ;
+    bg:aboutRecord <urn:src:gleif_l1:9845EXAMPLE000000114> ;
+    bg:counterpartyRecord <urn:src:gleif_l1:9845EXAMPLE000000211> ;
+    prov:wasDerivedFrom <urn:src:gleif_l2:9845EXAMPLE000000114-DIRECT> .
+
+<urn:fact:gleif_l2:9845EXAMPLE000000211-DIRECT> a bg:Ownership ;
+    bg:relationshipKind bg:IS_DIRECTLY_CONSOLIDATED_BY ;
+    bg:relationshipStatus "ACTIVE" ;
+    bg:ownershipPercentage 75.5 ;
+    bg:validFrom "2012-07-01"^^xsd:date ;
+    bg:aboutRecord <urn:src:gleif_l1:9845EXAMPLE000000211> ;
+    bg:counterpartyRecord <urn:src:gleif_l1:9845EXAMPLE000000308> ;
+    prov:wasDerivedFrom <urn:src:gleif_l2:9845EXAMPLE000000211-DIRECT> .
+
+<urn:fact:gleif_l2:9845EXAMPLE000000308-DIRECT> a bg:Ownership ;
+    bg:relationshipKind bg:IS_DIRECTLY_CONSOLIDATED_BY ;
+    bg:relationshipStatus "ACTIVE" ;
+    bg:validFrom "2020-01-01"^^xsd:date ;
+    bg:aboutRecord <urn:src:gleif_l1:9845EXAMPLE000000308> ;
+    bg:counterpartyRecord <urn:src:gleif_l1:9845EXAMPLE000000211> ;
+    prov:wasDerivedFrom <urn:src:gleif_l2:9845EXAMPLE000000308-DIRECT> .
+
+# GRAPH <urn:graph:links:m-2026.11.1>
+<urn:fact:gleif_l2:9845EXAMPLE000000114-DIRECT>
+    bg:owned <urn:abn:38610001119> ; bg:owner <urn:lei:9845EXAMPLE000000211> .
+<urn:fact:gleif_l2:9845EXAMPLE000000211-DIRECT>
+    bg:owned <urn:lei:9845EXAMPLE000000211> ; bg:owner <urn:lei:9845EXAMPLE000000308> .
+<urn:fact:gleif_l2:9845EXAMPLE000000308-DIRECT>
+    bg:owned <urn:lei:9845EXAMPLE000000308> ; bg:owner <urn:lei:9845EXAMPLE000000211> .
+
+# GRAPH <urn:graph:source:accc:2026-11-14>
+# An ACCC notice the matcher refused to attribute (see abstention below).
+# The fact exists, carries no party, and will gain one only if a later
+# matcher version links its record. Nothing here has to be rewritten.
+<urn:fact:accc:IN-2026-017> a bg:InfringementNotice ;
+    bg:regulator "ACCC" ; bg:amountAud 18780.00 ;
+    bg:description "Alleged false or misleading representations about financial product fees." ;
+    bg:validFrom "2026-10-21"^^xsd:date ; bg:validTo "2026-10-21"^^xsd:date ;
+    bg:aboutRecord <urn:src:accc:IN-2026-017> ;
+    prov:wasDerivedFrom <urn:src:accc:IN-2026-017> .
+
+# -----------------------------------------------------------------------------
+# E. Resolution decisions
+# -----------------------------------------------------------------------------
+# GRAPH <urn:graph:links:m-2026.11.1>
+
+<urn:link:m-2026.11.1:asic_afsl:512345> a bg:Link ;
+    bg:sourceRecord <urn:src:asic_afsl:512345> ;
+    bg:matchedRecord <urn:src:abr:38610001119> ;
+    bg:party <urn:abn:38610001119> ;
+    bg:matchType bg:EXACT_ABN ; bg:confidence 1.0 ;
+    bg:evidence """{"abn": "38610001119", "abn_checksum": true, "name_token_set": 1.0}""" ;
+    bg:matcherVersion "m-2026.11.1" .
+
+<urn:link:m-2026.11.1:gleif_l1:9845EXAMPLE000000114> a bg:Link ;
+    bg:sourceRecord <urn:src:gleif_l1:9845EXAMPLE000000114> ;
+    bg:matchedRecord <urn:src:abr:38610001119> ;
+    bg:party <urn:abn:38610001119> ;
+    bg:matchType bg:EXACT_ACN ; bg:confidence 1.0 ;
+    bg:evidence """{"acn": "610001119", "acn_check": true, "ra_id": "RA000014", "name_norm_equal": true}""" ;
+    bg:matcherVersion "m-2026.11.1" .
+
+<urn:link:m-2026.11.1:gleif_l1:9845EXAMPLE000000211> a bg:Link ;
+    bg:sourceRecord <urn:src:gleif_l1:9845EXAMPLE000000211> ;
+    bg:party <urn:lei:9845EXAMPLE000000211> ;
+    bg:matchType bg:EXACT_LEI ; bg:confidence 1.0 ;
+    bg:evidence """{"lei": "9845EXAMPLE000000211", "lei_check": true}""" ;
+    bg:matcherVersion "m-2026.11.1" .
+
+<urn:link:m-2026.11.1:gleif_l1:9845EXAMPLE000000308> a bg:Link ;
+    bg:sourceRecord <urn:src:gleif_l1:9845EXAMPLE000000308> ;
+    bg:party <urn:lei:9845EXAMPLE000000308> ;
+    bg:matchType bg:EXACT_LEI ; bg:confidence 1.0 ;
+    bg:evidence """{"lei": "9845EXAMPLE000000308", "lei_check": true}""" ;
+    bg:matcherVersion "m-2026.11.1" .
+
+<urn:link:m-2026.11.1:asic_company:610001119> a bg:Link ;
+    bg:sourceRecord <urn:src:asic_company:610001119> ;
+    bg:party <urn:abn:38610001119> ;
+    bg:matchType bg:EXACT_ACN ; bg:confidence 1.0 ;
+    bg:evidence """{"acn": "610001119", "acn_check": true}""" ;
+    bg:matcherVersion "m-2026.11.1" .
+
+<urn:link:m-2026.11.1:asic_liquidator:RL-30471> a bg:Link ;
+    bg:sourceRecord <urn:src:asic_liquidator:RL-30471> ;
+    bg:party <urn:party:person:6b1f0c2e9d> ;
+    bg:matchType bg:EXACT_LICENCE_NO ; bg:confidence 1.0 ;
+    bg:evidence """{"licence_no": "30471", "note": "identity source for this person"}""" ;
+    bg:matcherVersion "m-2026.11.1" .
+
+# Ban on a person: name match, person-to-person only, strict ban threshold.
+<urn:link:m-2026.11.1:asic_banned:BD-0042> a bg:Link ;
+    bg:sourceRecord <urn:src:asic_banned:BD-0042> ;
+    bg:matchedRecord <urn:src:asic_liquidator:RL-30471> ;
+    bg:party <urn:party:person:6b1f0c2e9d> ;
+    bg:matchType bg:NAME_NORMALISED_EXACT ; bg:confidence 0.96 ;
+    bg:evidence """{"name_norm": "jordan avery example", "party_type": "person", "canonical_hits": 1, "threshold": 0.95}""" ;
+    bg:matcherVersion "m-2026.11.1" .
+
+# Abstention: the ACCC name is close to SCA but not equal, unknown party type,
+# and the accusation-risk threshold for ACCC is 0.95.
+<urn:abstention:m-2026.11.1:accc:IN-2026-017> a bg:Abstention ;
+    bg:sourceRecord <urn:src:accc:IN-2026-017> ;
+    bg:bestCandidate <urn:abn:38610001119> ;
+    bg:score 0.81 ;
+    bg:abstainReason bg:BELOW_THRESHOLD ;
+    bg:evidence """{"name_token_set": 0.81, "distinctive_overlap": ["southern", "cross"], "differs": ["advisers", "advisory"], "threshold": 0.95}""" ;
+    bg:matcherVersion "m-2026.11.1" .

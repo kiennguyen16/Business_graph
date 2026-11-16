@@ -1,0 +1,835 @@
+# =============================================================================
+# bizgraph ontology: AU/NZ business knowledge graph
+# Namespace: https://w3id.org/bizgraph/ont#   (prefix bg:)
+# Loaded into named graph <urn:graph:ontology>.
+#
+# The model is derived from five questions, not from the sources. Every class
+# and property below carries bg:motivatedBy pointing at the question(s) that
+# forced it to exist. Terms with no question behind them were left out.
+#
+#   Q1  What is the ultimate parent of organisation X, following the ownership
+#       chain rather than one hop, and what happens when the chain cycles?
+#   Q2  Which organisations are within N (default 2) hops of a party that is
+#       banned or disqualified on date D, where the banned party may be a
+#       person or an organisation?
+#   Q3  Did party X hold a current AFSL or ACL on date D, with which
+#       authorisations, and who held licence number N at that time (transfers)?
+#   Q4  Which organisations received an ACCC infringement notice AND had a
+#       financial services licence cancelled in the last 3 months, and how
+#       confident is each attribution (match type, confidence, evidence)?
+#   Q5  Who is the sponsor of ARTG entry P, which resolved party is it, and if
+#       we refused to resolve it, why? (Every statement must trace back to the
+#       source record and matcher version that produced it.)
+#
+# Layering of named graphs (see ARCHITECTURE.md 1.3):
+#   urn:graph:source:{source}:{date}   bg:SourceRecord + bg:Fact as asserted.
+#                                      Facts point at RECORDS (bg:aboutRecord),
+#                                      never at canonical parties.
+#   urn:graph:canonical                bg:Party nodes, identifiers, attributes.
+#   urn:graph:links:{matcher_version}  bg:Link, bg:Abstention, and the
+#                                      party-level role shortcuts (bg:licensee,
+#                                      bg:bannedParty, bg:owner, ...) derived
+#                                      from those links. Dropping a version
+#                                      drops its attributions with it.
+#   urn:graph:ontology                 this file.
+#
+# Alignment policy: external vocabularies are referenced, never owl:imported.
+# rdfs:subClassOf only where every instance of ours is certainly an instance
+# of theirs; skos:closeMatch where meaning overlaps but their axioms would be
+# wrong for our data; owl:equivalentClass is used nowhere (see NOTES.md).
+# =============================================================================
+
+@prefix bg:          <https://w3id.org/bizgraph/ont#> .
+@prefix owl:         <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:         <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:        <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:         <http://www.w3.org/2001/XMLSchema#> .
+@prefix skos:        <http://www.w3.org/2004/02/skos/core#> .
+@prefix dcterms:     <http://purl.org/dc/terms/> .
+@prefix prov:        <http://www.w3.org/ns/prov#> .
+@prefix org:         <http://www.w3.org/ns/org#> .
+@prefix schema:      <https://schema.org/> .
+@prefix foaf:        <http://xmlns.com/foaf/0.1/> .
+@prefix cmns-org:    <https://www.omg.org/spec/Commons/Organizations/> .
+@prefix fibo-be-le-lp: <https://spec.edmcouncil.org/fibo/ontology/BE/LegalEntities/LegalPersons/> .
+@prefix gleif-base:  <https://www.gleif.org/ontology/Base/> .
+@prefix gleif-L1:    <https://www.gleif.org/ontology/L1/> .
+@prefix gleif-L2:    <https://www.gleif.org/ontology/L2/> .
+
+# -----------------------------------------------------------------------------
+# Ontology header
+# -----------------------------------------------------------------------------
+
+<https://w3id.org/bizgraph/ont> a owl:Ontology ;
+    dcterms:title "bizgraph: AU/NZ business knowledge graph ontology"@en ;
+    owl:versionInfo "0.1.0" ;
+    dcterms:created "2026-11-16"^^xsd:date ;
+    rdfs:comment """Parties (organisations and people), reified time-bounded facts
+about them (licences, bans, ownership, infringement notices, product
+sponsorships), immutable source records with PROV-O provenance, and the
+versioned entity-resolution layer (links and abstentions) that connects
+records to parties. Invariants live in shapes.ttl (SHACL), not in OWL keys,
+because an OWL key violation is resolved by inferring owl:sameAs, which is a
+silent merge."""@en ;
+    rdfs:seeAlso <shapes.ttl>, <NOTES.md> .
+
+# -----------------------------------------------------------------------------
+# Meta: driving questions and annotation properties
+# -----------------------------------------------------------------------------
+
+bg:DrivingQuestion a owl:Class ;
+    rdfs:label "Driving question"@en ;
+    rdfs:comment "A question the graph must answer. Schema terms point at the question that motivated them."@en .
+
+bg:motivatedBy a owl:AnnotationProperty ;
+    rdfs:label "motivated by"@en ;
+    rdfs:comment "Links a schema term to the driving question(s) that required it."@en ;
+    rdfs:range bg:DrivingQuestion .
+
+bg:traversalPolicy a owl:AnnotationProperty ;
+    rdfs:label "traversal policy"@en ;
+    rdfs:comment """Tells generic traversal code what to do with an object property.
+"expand": follow it when walking the graph (party roles).
+"filter-only": the object is a small controlled vocabulary concept with
+millions of inbound edges at 15M companies; use it as a filter constant,
+never expand through it."""@en .
+
+bg:Q1 a bg:DrivingQuestion ; skos:notation "Q1" ;
+    rdfs:label "Ultimate parent"@en ;
+    rdfs:comment "What is the ultimate parent of organisation X, following the chain, bounded, with cycle handling?"@en .
+bg:Q2 a bg:DrivingQuestion ; skos:notation "Q2" ;
+    rdfs:label "Proximity to banned parties"@en ;
+    rdfs:comment "Which organisations are within N hops of a party banned or disqualified on date D (person or organisation)?"@en .
+bg:Q3 a bg:DrivingQuestion ; skos:notation "Q3" ;
+    rdfs:label "Licence status on a date"@en ;
+    rdfs:comment "Did X hold a current AFSL or ACL on date D, with which authorisations, and who held licence N then?"@en .
+bg:Q4 a bg:DrivingQuestion ; skos:notation "Q4" ;
+    rdfs:label "ACCC notice and cancelled licence"@en ;
+    rdfs:comment "Which organisations got an ACCC infringement notice and had a financial services licence cancelled in the last 3 months, with attribution confidence?"@en .
+bg:Q5 a bg:DrivingQuestion ; skos:notation "Q5" ;
+    rdfs:label "ARTG sponsor and provenance"@en ;
+    rdfs:comment "Who sponsors ARTG entry P, which resolved party is it or why was resolution refused, traced to source record and matcher version?"@en .
+
+# -----------------------------------------------------------------------------
+# Parties
+# One superclass, two disjoint subclasses. "Unknown type" exists only at the
+# source-record level (bg:partyTypeHint); the pipeline never mints a canonical
+# party of unknown type. A node typed only bg:Party is legal OWL but is
+# flagged as a SHACL warning.
+# -----------------------------------------------------------------------------
+
+bg:Party a owl:Class ;
+    rdfs:label "Party"@en ;
+    rdfs:comment """A canonical real-world actor: an organisation or a natural person.
+Canonical, i.e. minted by the pipeline from Tier 1 / GLEIF identity or from a
+typed register (liquidators), and identified by urn:abn:, urn:acn:, urn:lei:
+or a minted urn:party: IRI. Bans, licences and links target bg:Party because
+both kinds of party can be banned, licensed, or appear in a name-only source."""@en ;
+    rdfs:subClassOf prov:Agent ;
+    skos:closeMatch foaf:Agent ;
+    skos:editorialNote "Rejected: FIBO Parties (fibo-fnd-pty-pty:PartyInRole) models a party as a role played in a context; ours is the actor that plays many roles over time."@en ;
+    bg:motivatedBy bg:Q1, bg:Q2, bg:Q3, bg:Q4, bg:Q5 .
+
+bg:Organisation a owl:Class ;
+    rdfs:label "Organisation"@en ;
+    rdfs:comment """A registered organisation: company, trust, partnership, super fund,
+government entity, or foreign entity with an LEI. Always backed by a register
+(ABR, ASIC, GLEIF), so it is formally recognised. Not every instance is a
+legal person (trusts and partnerships in the ABR are not), which is why it is
+NOT a subclass of a legal-person class."""@en ;
+    rdfs:subClassOf bg:Party, org:FormalOrganization, schema:Organization ;
+    skos:closeMatch cmns-org:LegalEntity, gleif-L1:LegalEntity ;
+    bg:motivatedBy bg:Q1, bg:Q4 .
+
+bg:Person a owl:Class ;
+    rdfs:label "Person"@en ;
+    rdfs:comment """A natural person: registered liquidator, banned or disqualified
+individual, or an ABR sole trader (entity type IND), who holds an ABN. A
+person can therefore carry bg:abn, which is why identifier properties attach
+to bg:Party and not to bg:Organisation."""@en ;
+    rdfs:subClassOf bg:Party, schema:Person, foaf:Person ;
+    rdfs:seeAlso fibo-be-le-lp:LegallyCompetentNaturalPerson ;
+    bg:motivatedBy bg:Q2 .
+
+[] a owl:AllDisjointClasses ;
+    owl:members ( bg:Organisation bg:Person ) .
+
+# --- Party data properties --------------------------------------------------
+
+bg:name a owl:DatatypeProperty ;
+    rdfs:label "name"@en ;
+    rdfs:comment "Current registered name (organisation) or full name (person), as asserted by the identity source."@en ;
+    rdfs:subPropertyOf schema:name ;
+    rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q5 .
+
+bg:nameNorm a owl:DatatypeProperty ;
+    rdfs:label "normalised name"@en ;
+    rdfs:comment "Normalised name used for blocking and exact-name matching (bizgraph.normalise.names). On both parties and source records."@en ;
+    rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q5 .
+
+bg:otherName a owl:DatatypeProperty ;
+    rdfs:label "other name"@en ;
+    rdfs:comment "Business name, trading name or former name. Multi-valued literal; name history with dates is an extension point (a bg:Naming fact)."@en ;
+    rdfs:domain bg:Party ;
+    rdfs:range xsd:string ;
+    skos:closeMatch schema:alternateName ;
+    bg:motivatedBy bg:Q5 .
+
+bg:givenNames a owl:DatatypeProperty ;
+    rdfs:label "given names"@en ;
+    rdfs:domain bg:Person ; rdfs:range xsd:string ;
+    rdfs:subPropertyOf schema:givenName ;
+    bg:motivatedBy bg:Q2 .
+
+bg:familyName a owl:DatatypeProperty ;
+    rdfs:label "family name"@en ;
+    rdfs:domain bg:Person ; rdfs:range xsd:string ;
+    rdfs:subPropertyOf schema:familyName ;
+    bg:motivatedBy bg:Q2 .
+
+# Low-cardinality attributes: literals, deliberately NOT nodes.
+# At 15M organisations a node per state would carry ~5M inbound edges (NSW),
+# a node per status ~10M (Active), a node per ANZSIC class up to ~1M, a node
+# per postcode up to ~100k. Any neighbourhood expansion through them returns
+# a large share of the graph. Codes are kept as literals; the labelled code
+# lists (ANZSIC, states) may be loaded as SKOS concept schemes and joined by
+# skos:notation = literal, so no instance-to-concept edge exists at all.
+
+bg:entityType a owl:DatatypeProperty ;
+    rdfs:label "entity type code"@en ;
+    rdfs:comment "ABR / ASIC entity type code, e.g. PRV, PUB, IND, TRT. Literal, not a node (hub risk)."@en ;
+    rdfs:domain bg:Party ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q4 .
+
+bg:registrationStatus a owl:DatatypeProperty ;
+    rdfs:label "registration status"@en ;
+    rdfs:comment "Register status as of the canonical build, e.g. ACT, CAN, REGD, DRGD. Literal, not a node (hub risk). History is in the source snapshot graphs."@en ;
+    rdfs:domain bg:Party ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q4 .
+
+bg:state a owl:DatatypeProperty ;
+    rdfs:label "state or territory"@en ;
+    rdfs:comment "AU state/territory code (NSW, VIC, ...) or NZ. Literal, not a node (hub risk)."@en ;
+    rdfs:domain bg:Party ; rdfs:range xsd:string ;
+    skos:closeMatch schema:addressRegion .
+
+bg:postcode a owl:DatatypeProperty ;
+    rdfs:label "postcode"@en ;
+    rdfs:comment "Main business location postcode. Literal, not a node (hub risk)."@en ;
+    rdfs:domain bg:Party ; rdfs:range xsd:string ;
+    skos:closeMatch schema:postalCode .
+
+bg:anzsic a owl:DatatypeProperty ;
+    rdfs:label "ANZSIC code"@en ;
+    rdfs:comment "ANZSIC 2006 class code as a literal. Join to an ANZSIC SKOS scheme by skos:notation if labels are needed; never an edge."@en ;
+    rdfs:domain bg:Party ; rdfs:range xsd:string .
+
+bg:registeredOn a owl:DatatypeProperty ;
+    rdfs:label "registered on"@en ;
+    rdfs:domain bg:Party ; rdfs:range xsd:date ;
+    bg:motivatedBy bg:Q4 .
+
+bg:deregisteredOn a owl:DatatypeProperty ;
+    rdfs:label "deregistered on"@en ;
+    rdfs:domain bg:Party ; rdfs:range xsd:date ;
+    bg:motivatedBy bg:Q4 .
+
+# -----------------------------------------------------------------------------
+# Identifiers: literal properties, not identifier nodes.
+# An ABN/ACN/LEI node would have degree exactly 1 (uniqueness) so it adds no
+# traversal value, only ~2 extra triples per party (30M+ at 15M parties).
+# The canonical party IRI is already minted from the strongest identifier
+# (urn:abn:, else urn:acn:, else urn:lei:), so the identifier IS the node.
+# The same properties appear on bg:SourceRecord (the value the source
+# asserted, normalised and checksum-valid) so the exact path is one join.
+# Licence numbers are not party identifiers: they live on bg:Licence facts,
+# because a licence can be transferred between holders.
+# Uniqueness is enforced in shapes.ttl, NOT with owl:hasKey or
+# owl:InverseFunctionalProperty, whose semantics would infer owl:sameAs.
+# -----------------------------------------------------------------------------
+
+bg:IdentifierBearer a owl:Class ;
+    rdfs:label "identifier bearer"@en ;
+    rdfs:comment "Union of things that may carry identifier literals: canonical parties and source records."@en ;
+    owl:equivalentClass [ a owl:Class ; owl:unionOf ( bg:Party bg:SourceRecord ) ] .
+
+bg:abn a owl:DatatypeProperty ;
+    rdfs:label "ABN"@en ;
+    rdfs:comment "Australian Business Number, 11 digits, checksum-valid, normalised (digits only). At most one per party; one party per value."@en ;
+    rdfs:domain bg:IdentifierBearer ; rdfs:range xsd:string ;
+    skos:closeMatch schema:taxID ;
+    bg:motivatedBy bg:Q4, bg:Q5 .
+
+bg:acn a owl:DatatypeProperty ;
+    rdfs:label "ACN"@en ;
+    rdfs:comment "Australian Company Number, 9 digits, check digit valid. At most one per party; one party per value."@en ;
+    rdfs:domain bg:IdentifierBearer ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q4, bg:Q5 .
+
+bg:arbn a owl:DatatypeProperty ;
+    rdfs:label "ARBN"@en ;
+    rdfs:comment "Australian Registered Body Number (foreign company registered in AU), 9 digits, same check digit as ACN."@en ;
+    rdfs:domain bg:IdentifierBearer ; rdfs:range xsd:string .
+
+bg:lei a owl:DatatypeProperty ;
+    rdfs:label "LEI"@en ;
+    rdfs:comment "ISO 17442 Legal Entity Identifier, 20 characters, mod 97 check."@en ;
+    rdfs:domain bg:IdentifierBearer ; rdfs:range xsd:string ;
+    rdfs:subPropertyOf schema:leiCode ;
+    skos:closeMatch gleif-L1:LEI ;
+    rdfs:seeAlso gleif-L1:LEI ;
+    bg:motivatedBy bg:Q1 .
+
+# -----------------------------------------------------------------------------
+# Provenance: source records (PROV-O)
+# -----------------------------------------------------------------------------
+
+bg:SourceRecord a owl:Class ;
+    rdfs:label "Source record"@en ;
+    rdfs:comment """One raw record exactly as a source asserted it, in the named graph of its
+snapshot. IRI urn:src:{source}:{record_id}. Immutable and never deleted
+after resolution: canonical parties, facts and links are derived views over
+records, so any merge can be undone by re-deriving. The full payload lives in
+DuckDB (source_record); the graph carries the fields queries need."""@en ;
+    rdfs:subClassOf prov:Entity ;
+    bg:motivatedBy bg:Q5 .
+
+bg:SourceSnapshot a owl:Class ;
+    rdfs:label "Source snapshot"@en ;
+    rdfs:comment "One ingested file of one source on one date. Its IRI is the named graph IRI urn:graph:source:{source}:{date}; records join to it through the graph they live in, not through an edge (an edge would give the snapshot node 1M+ inbound links)."@en ;
+    rdfs:subClassOf prov:Entity, prov:Bundle ;
+    bg:motivatedBy bg:Q5 .
+
+[] a owl:AllDisjointClasses ;
+    owl:members ( bg:SourceRecord bg:Party ) .
+
+bg:sourceId a owl:DatatypeProperty ;
+    rdfs:label "source id"@en ;
+    rdfs:comment "Short source code, e.g. abr, asic_company, asic_afsl, asic_banned, gleif_l1, gleif_l2, accc, artg. Literal, not a node (a source node would be a hub)."@en ;
+    rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q5 .
+
+bg:recordId a owl:DatatypeProperty ;
+    rdfs:label "record id"@en ;
+    rdfs:comment "Stable record id within the source."@en ;
+    rdfs:domain bg:SourceRecord ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q5 .
+
+bg:snapshotDate a owl:DatatypeProperty ;
+    rdfs:label "snapshot date"@en ;
+    rdfs:comment "Date of the source file the record was first seen in (load time, the second axis of bitemporality)."@en ;
+    rdfs:range xsd:date ;
+    bg:motivatedBy bg:Q5 .
+
+bg:contentHash a owl:DatatypeProperty ;
+    rdfs:label "content hash"@en ;
+    rdfs:comment "sha256 prefix of the canonical JSON payload; a changed record gets a new hash, an unchanged rerun inserts nothing."@en ;
+    rdfs:range xsd:string .
+
+bg:nameRaw a owl:DatatypeProperty ;
+    rdfs:label "raw name"@en ;
+    rdfs:comment "The name exactly as written in the source."@en ;
+    rdfs:domain bg:SourceRecord ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q5 .
+
+bg:partyTypeHint a owl:DatatypeProperty ;
+    rdfs:label "party type hint"@en ;
+    rdfs:comment """What the source tells us about the referent: "organisation", "person" or
+"unknown". Unknown is a property of the RECORD, never of a canonical party.
+The matcher refuses Person to Organisation links and applies the strictest
+threshold to unknown-type records."""@en ;
+    rdfs:domain bg:SourceRecord ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q2 .
+
+bg:recordsIn a owl:DatatypeProperty ;
+    rdfs:label "records in"@en ;
+    rdfs:domain bg:SourceSnapshot ; rdfs:range xsd:integer .
+
+bg:fileHash a owl:DatatypeProperty ;
+    rdfs:label "file hash"@en ;
+    rdfs:domain bg:SourceSnapshot ; rdfs:range xsd:string .
+
+# prov:wasDerivedFrom is reused as-is: Fact -> SourceRecord and canonical
+# Party -> SourceRecord. (PROV-O gives it domain/range prov:Entity, so a
+# Party is also inferred to be a prov:Entity; Agent and Entity are not
+# disjoint in PROV-O, so this is consistent.)
+
+# -----------------------------------------------------------------------------
+# Reified facts (n-ary pattern)
+# Anything with its own attributes or validity interval is a node.
+# Facts live in their source graph and point at source RECORDS
+# (bg:aboutRecord, bg:counterpartyRecord). The party-level role properties
+# (bg:licensee, bg:owner, ...) are shortcuts derived from links and written
+# into the links graph of a matcher version, so a threshold change rewrites
+# attributions without touching the facts.
+# -----------------------------------------------------------------------------
+
+bg:Fact a owl:Class ;
+    rdfs:label "Fact"@en ;
+    rdfs:comment """A reified, time-bounded statement about a party: a licence holding, a
+ban, an ownership, an infringement notice, a product sponsorship. Validity
+time is bg:validFrom/bg:validTo (closed interval, open-ended when absent);
+load time comes from the snapshot graph. IRI urn:fact:{source}:{record_id}
+(suffixed :{n} when one record yields several facts)."""@en ;
+    rdfs:subClassOf prov:Entity ;
+    bg:motivatedBy bg:Q2, bg:Q3, bg:Q4 .
+
+bg:Relationship a owl:Class ;
+    rdfs:label "Relationship"@en ;
+    rdfs:comment """EXTENSION POINT. A fact between two parties. A new relationship type
+(director of, auditor of, liquidator appointed to, subsidiary listed in an
+annual report) is a new subclass plus one role subproperty of bg:subject and
+one of bg:counterparty, plus a bg:RelationshipKind concept. Generic
+traversals read the role subproperties from <urn:graph:ontology>, so no code
+or existing data changes."""@en ;
+    rdfs:subClassOf bg:Fact ;
+    bg:motivatedBy bg:Q1, bg:Q2 .
+
+bg:validFrom a owl:DatatypeProperty, owl:FunctionalProperty ;
+    rdfs:label "valid from"@en ;
+    rdfs:comment "First day the fact held in the world (validity time). Absent means unknown start."@en ;
+    rdfs:domain bg:Fact ; rdfs:range xsd:date ;
+    bg:motivatedBy bg:Q2, bg:Q3, bg:Q4 .
+
+bg:validTo a owl:DatatypeProperty, owl:FunctionalProperty ;
+    rdfs:label "valid to"@en ;
+    rdfs:comment "Last day the fact held (inclusive). Absent means still in force as of the snapshot."@en ;
+    rdfs:domain bg:Fact ; rdfs:range xsd:date ;
+    bg:motivatedBy bg:Q2, bg:Q3, bg:Q4 .
+
+bg:aboutRecord a owl:ObjectProperty ;
+    rdfs:label "about record"@en ;
+    rdfs:comment "The source record that names the subject of this fact. Always present, exactly one. This, not a party, is what the source actually asserted."@en ;
+    rdfs:domain bg:Fact ; rdfs:range bg:SourceRecord ;
+    bg:traversalPolicy "expand" ;
+    bg:motivatedBy bg:Q5 .
+
+bg:counterpartyRecord a owl:ObjectProperty ;
+    rdfs:label "counterparty record"@en ;
+    rdfs:comment "For a relationship: the source record naming the other party (e.g. the parent's GLEIF L1 record)."@en ;
+    rdfs:domain bg:Relationship ; rdfs:range bg:SourceRecord ;
+    bg:traversalPolicy "expand" ;
+    bg:motivatedBy bg:Q1 .
+
+bg:subject a owl:ObjectProperty ;
+    rdfs:label "subject"@en ;
+    rdfs:comment "Abstract party-level role: the party the fact is about. Never emitted directly; emit a subproperty. Derived from the active link for bg:aboutRecord, written to the links graph."@en ;
+    rdfs:domain bg:Fact ; rdfs:range bg:Party ;
+    bg:traversalPolicy "expand" ;
+    bg:motivatedBy bg:Q2 .
+
+bg:counterparty a owl:ObjectProperty ;
+    rdfs:label "counterparty"@en ;
+    rdfs:comment "Abstract party-level role: the other party of a relationship. Derived from the link for bg:counterpartyRecord."@en ;
+    rdfs:domain bg:Relationship ; rdfs:range bg:Party ;
+    bg:traversalPolicy "expand" ;
+    bg:motivatedBy bg:Q1, bg:Q2 .
+
+# --- Licence ------------------------------------------------------------------
+
+bg:Licence a owl:Class ;
+    rdfs:label "Licence holding"@en ;
+    rdfs:comment """One party holding one licence number for one interval. A transfer is a
+new bg:Licence with the same number, a different holder and bg:transferredFrom
+the previous holding, so the transfer history is the chain of holdings and
+"who held licence N on date D" is a single interval filter."""@en ;
+    rdfs:subClassOf bg:Fact ;
+    skos:closeMatch fibo-be-le-lp:BusinessLicense ;
+    bg:motivatedBy bg:Q3, bg:Q4 .
+
+bg:licensee a owl:ObjectProperty ;
+    rdfs:label "licensee"@en ;
+    rdfs:subPropertyOf bg:subject ;
+    rdfs:domain bg:Licence ; rdfs:range bg:Party ;
+    bg:traversalPolicy "expand" ;
+    bg:motivatedBy bg:Q3, bg:Q4 .
+
+bg:licenceNumber a owl:DatatypeProperty ;
+    rdfs:label "licence number"@en ;
+    rdfs:comment "AFSL / ACL / registered liquidator number, digits, leading zeros stripped. Unique per kind at any instant, not over time (transfers)."@en ;
+    rdfs:domain bg:Licence ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q3 .
+
+bg:licenceKind a owl:ObjectProperty ;
+    rdfs:label "licence kind"@en ;
+    rdfs:domain bg:Licence ; rdfs:range bg:LicenceKind ;
+    bg:traversalPolicy "filter-only" ;
+    bg:motivatedBy bg:Q3, bg:Q4 .
+
+bg:licenceStatus a owl:DatatypeProperty ;
+    rdfs:label "licence status"@en ;
+    rdfs:comment "Status as asserted by the source snapshot, e.g. Current, Cancelled, Suspended. Literal. The date question is answered by validFrom/validTo, not by this field."@en ;
+    rdfs:domain bg:Licence ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q3, bg:Q4 .
+
+bg:authorisation a owl:DatatypeProperty ;
+    rdfs:label "authorisation"@en ;
+    rdfs:comment "One authorisation condition text, multi-valued literal. Not a node: the text varies per licence and is filtered, not traversed."@en ;
+    rdfs:domain bg:Licence ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q3 .
+
+bg:transferredFrom a owl:ObjectProperty ;
+    rdfs:label "transferred from"@en ;
+    rdfs:comment "Previous holding of the same licence number."@en ;
+    rdfs:domain bg:Licence ; rdfs:range bg:Licence ;
+    bg:motivatedBy bg:Q3 .
+
+# --- Ban ------------------------------------------------------------------------
+
+bg:Ban a owl:Class ;
+    rdfs:label "Ban or disqualification"@en ;
+    rdfs:comment "A ban or disqualification of one party between two dates. The subject may be a person or an organisation, which is why the role ranges over bg:Party."@en ;
+    rdfs:subClassOf bg:Fact ;
+    bg:motivatedBy bg:Q2 .
+
+bg:bannedParty a owl:ObjectProperty ;
+    rdfs:label "banned party"@en ;
+    rdfs:subPropertyOf bg:subject ;
+    rdfs:domain bg:Ban ; rdfs:range bg:Party ;
+    bg:traversalPolicy "expand" ;
+    bg:motivatedBy bg:Q2 .
+
+bg:banType a owl:DatatypeProperty ;
+    rdfs:label "ban type"@en ;
+    rdfs:comment "Register text, e.g. Banned Futures Representative, Disqualified Director. Literal."@en ;
+    rdfs:domain bg:Ban ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q2 .
+
+# --- Ownership ----------------------------------------------------------------
+
+bg:Ownership a owl:Class ;
+    rdfs:label "Ownership / consolidation"@en ;
+    rdfs:comment """Owner (counterparty) controls or consolidates owned (subject), with an
+optional percentage, a kind and a validity interval. GLEIF Level 2 gives
+DIRECT and ULTIMATE consolidation; the ultimate-parent traversal follows
+DIRECT only and uses ULTIMATE as a cross-check. Corporate ownership is a
+graph, not a tree: cycles are expected and handled by the traversal (visited
+set plus depth bound), never by the schema."""@en ;
+    rdfs:subClassOf bg:Relationship ;
+    skos:closeMatch gleif-base:LegalEntityRelationship ;
+    rdfs:seeAlso gleif-L2:LegalEntityRelationshipRecord ;
+    bg:motivatedBy bg:Q1 .
+
+bg:owned a owl:ObjectProperty ;
+    rdfs:label "owned"@en ;
+    rdfs:subPropertyOf bg:subject ;
+    rdfs:domain bg:Ownership ; rdfs:range bg:Party ;
+    skos:closeMatch gleif-L2:hasChild ;
+    bg:traversalPolicy "expand" ;
+    bg:motivatedBy bg:Q1 .
+
+bg:owner a owl:ObjectProperty ;
+    rdfs:label "owner"@en ;
+    rdfs:subPropertyOf bg:counterparty ;
+    rdfs:domain bg:Ownership ; rdfs:range bg:Party ;
+    skos:closeMatch gleif-L2:hasParent ;
+    bg:traversalPolicy "expand" ;
+    bg:motivatedBy bg:Q1 .
+
+bg:ownershipPercentage a owl:DatatypeProperty ;
+    rdfs:label "ownership percentage"@en ;
+    rdfs:comment "0 to 100. Absent for GLEIF consolidation (which is about accounting control, not equity)."@en ;
+    rdfs:domain bg:Ownership ; rdfs:range xsd:decimal ;
+    bg:motivatedBy bg:Q1 .
+
+bg:relationshipKind a owl:ObjectProperty ;
+    rdfs:label "relationship kind"@en ;
+    rdfs:domain bg:Relationship ; rdfs:range bg:RelationshipKind ;
+    bg:traversalPolicy "filter-only" ;
+    bg:motivatedBy bg:Q1 .
+
+bg:relationshipStatus a owl:DatatypeProperty ;
+    rdfs:label "relationship status"@en ;
+    rdfs:comment "GLEIF RelationshipStatus as a literal (ACTIVE, INACTIVE)."@en ;
+    rdfs:domain bg:Relationship ; rdfs:range xsd:string .
+
+# --- Affiliation (extension example used by Q2) ---------------------------------
+
+bg:Affiliation a owl:Class ;
+    rdfs:label "Affiliation"@en ;
+    rdfs:comment "A person acting for an organisation (e.g. a registered liquidator and their firm). Shows the extension pattern: one subclass, two role properties, no change elsewhere."@en ;
+    rdfs:subClassOf bg:Relationship ;
+    skos:closeMatch org:Membership ;
+    bg:motivatedBy bg:Q2 .
+
+bg:member a owl:ObjectProperty ;
+    rdfs:label "member"@en ;
+    rdfs:subPropertyOf bg:subject ;
+    rdfs:domain bg:Affiliation ; rdfs:range bg:Party ;
+    skos:closeMatch org:member ;
+    bg:traversalPolicy "expand" ;
+    bg:motivatedBy bg:Q2 .
+
+bg:affiliatedWith a owl:ObjectProperty ;
+    rdfs:label "affiliated with"@en ;
+    rdfs:subPropertyOf bg:counterparty ;
+    rdfs:domain bg:Affiliation ; rdfs:range bg:Party ;
+    skos:closeMatch org:organization ;
+    bg:traversalPolicy "expand" ;
+    bg:motivatedBy bg:Q2 .
+
+# --- Infringement notice -------------------------------------------------------
+
+bg:InfringementNotice a owl:Class ;
+    rdfs:label "Infringement notice"@en ;
+    rdfs:comment "A regulator's infringement notice. An event: validFrom = validTo = issue date. Tier 3 (name only), so attribution to a party is the highest-risk link in the graph."@en ;
+    rdfs:subClassOf bg:Fact ;
+    bg:motivatedBy bg:Q4 .
+
+bg:noticeRecipient a owl:ObjectProperty ;
+    rdfs:label "notice recipient"@en ;
+    rdfs:subPropertyOf bg:subject ;
+    rdfs:domain bg:InfringementNotice ; rdfs:range bg:Party ;
+    bg:traversalPolicy "expand" ;
+    bg:motivatedBy bg:Q4 .
+
+bg:amountAud a owl:DatatypeProperty ;
+    rdfs:label "amount (AUD)"@en ;
+    rdfs:domain bg:InfringementNotice ; rdfs:range xsd:decimal ;
+    bg:motivatedBy bg:Q4 .
+
+bg:regulator a owl:DatatypeProperty ;
+    rdfs:label "regulator"@en ;
+    rdfs:comment "Issuing regulator code (ACCC, ASIC). A literal, not an edge to the regulator party: every notice pointing at one ACCC node would make it a hub with no traversal value."@en ;
+    rdfs:domain bg:InfringementNotice ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q4 .
+
+bg:description a owl:DatatypeProperty ;
+    rdfs:label "description"@en ;
+    rdfs:domain bg:Fact ; rdfs:range xsd:string .
+
+# --- Product sponsorship -------------------------------------------------------
+
+bg:ProductSponsorship a owl:Class ;
+    rdfs:label "ARTG product sponsorship"@en ;
+    rdfs:comment "A party sponsoring one ARTG entry. The product is NOT a node: one ARTG id belongs to one sponsorship at a time and has no other edges, so a node would add triples and no paths."@en ;
+    rdfs:subClassOf bg:Fact ;
+    bg:motivatedBy bg:Q5 .
+
+bg:sponsor a owl:ObjectProperty ;
+    rdfs:label "sponsor"@en ;
+    rdfs:subPropertyOf bg:subject ;
+    rdfs:domain bg:ProductSponsorship ; rdfs:range bg:Party ;
+    bg:traversalPolicy "expand" ;
+    bg:motivatedBy bg:Q5 .
+
+bg:artgId a owl:DatatypeProperty ;
+    rdfs:label "ARTG id"@en ;
+    rdfs:domain bg:ProductSponsorship ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q5 .
+
+bg:productName a owl:DatatypeProperty ;
+    rdfs:label "product name"@en ;
+    rdfs:domain bg:ProductSponsorship ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q5 .
+
+# -----------------------------------------------------------------------------
+# Resolution layer: links and abstentions (n-ary), per matcher version
+# IRIs: urn:link:{matcher_version}:{source}:{record_id}
+#       urn:abstention:{matcher_version}:{source}:{record_id}
+# Graph: urn:graph:links:{matcher_version}
+# -----------------------------------------------------------------------------
+
+bg:ResolutionDecision a owl:Class ;
+    rdfs:label "Resolution decision"@en ;
+    rdfs:comment "What one matcher version decided about one source record: a link or an abstention, never both."@en ;
+    rdfs:subClassOf prov:Entity ;
+    bg:motivatedBy bg:Q4, bg:Q5 .
+
+bg:Link a owl:Class ;
+    rdfs:label "Link"@en ;
+    rdfs:comment "Accepted attribution of a source record to a canonical party, with match type, confidence, evidence and the matcher version that made it. Reversible: drop or replace the links graph."@en ;
+    rdfs:subClassOf bg:ResolutionDecision ;
+    bg:motivatedBy bg:Q4, bg:Q5 .
+
+bg:Abstention a owl:Class ;
+    rdfs:label "Abstention"@en ;
+    rdfs:comment "A record believed to be a business that the matcher refused to link, with the best candidate, its score and the reason. First-class output, not a missing link."@en ;
+    rdfs:subClassOf bg:ResolutionDecision ;
+    bg:motivatedBy bg:Q5 .
+
+[] a owl:AllDisjointClasses ;
+    owl:members ( bg:Link bg:Abstention ) .
+
+bg:sourceRecord a owl:ObjectProperty ;
+    rdfs:label "source record"@en ;
+    rdfs:comment "The record being resolved (left side). Exactly one."@en ;
+    rdfs:domain bg:ResolutionDecision ; rdfs:range bg:SourceRecord ;
+    bg:traversalPolicy "expand" ;
+    bg:motivatedBy bg:Q5 .
+
+bg:matchedRecord a owl:ObjectProperty ;
+    rdfs:label "matched record"@en ;
+    rdfs:comment "The canonical-side source record the match was made against (right side, e.g. the ABR record whose ABN or name matched). At most one."@en ;
+    rdfs:domain bg:Link ; rdfs:range bg:SourceRecord ;
+    bg:motivatedBy bg:Q5 .
+
+bg:party a owl:ObjectProperty ;
+    rdfs:label "party"@en ;
+    rdfs:comment "The canonical party the record is attributed to. Exactly one."@en ;
+    rdfs:domain bg:Link ; rdfs:range bg:Party ;
+    bg:traversalPolicy "expand" ;
+    bg:motivatedBy bg:Q4, bg:Q5 .
+
+bg:bestCandidate a owl:ObjectProperty ;
+    rdfs:label "best candidate"@en ;
+    rdfs:comment "Highest-ranked candidate the matcher declined. Optional (no candidate at all is a valid abstention)."@en ;
+    rdfs:domain bg:Abstention ; rdfs:range bg:Party ;
+    bg:motivatedBy bg:Q5 .
+
+bg:matchType a owl:ObjectProperty ;
+    rdfs:label "match type"@en ;
+    rdfs:domain bg:Link ; rdfs:range bg:MatchType ;
+    bg:traversalPolicy "filter-only" ;
+    bg:motivatedBy bg:Q4 .
+
+bg:confidence a owl:DatatypeProperty ;
+    rdfs:label "confidence"@en ;
+    rdfs:comment "Calibrated probability the link is correct, 0 to 1."@en ;
+    rdfs:domain bg:Link ; rdfs:range xsd:decimal ;
+    bg:motivatedBy bg:Q4 .
+
+bg:score a owl:DatatypeProperty ;
+    rdfs:label "score"@en ;
+    rdfs:comment "Best candidate's raw score at abstention time, 0 to 1."@en ;
+    rdfs:domain bg:Abstention ; rdfs:range xsd:decimal ;
+    bg:motivatedBy bg:Q5 .
+
+bg:abstainReason a owl:ObjectProperty ;
+    rdfs:label "abstain reason"@en ;
+    rdfs:domain bg:Abstention ; rdfs:range bg:AbstainReason ;
+    bg:traversalPolicy "filter-only" ;
+    bg:motivatedBy bg:Q5 .
+
+bg:evidence a owl:DatatypeProperty ;
+    rdfs:label "evidence"@en ;
+    rdfs:comment "JSON object with the features, scores, path and query text that produced the decision. A JSON string literal: evidence is read, never queried into."@en ;
+    rdfs:domain bg:ResolutionDecision ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q4, bg:Q5 .
+
+bg:matcherVersion a owl:DatatypeProperty ;
+    rdfs:label "matcher version"@en ;
+    rdfs:comment "Version string of the matcher code plus threshold policy. A literal, not an edge to a matcher-run node, which would be a hub of millions."@en ;
+    rdfs:domain bg:ResolutionDecision ; rdfs:range xsd:string ;
+    bg:motivatedBy bg:Q5 .
+
+# -----------------------------------------------------------------------------
+# Controlled vocabularies (SKOS). Concepts are also typed with an OWL class so
+# a range can be stated; they carry skos:notation equal to the code string
+# used in DuckDB and links.jsonl.
+# -----------------------------------------------------------------------------
+
+bg:MatchType a owl:Class ;
+    rdfs:label "Match type"@en ;
+    rdfs:subClassOf skos:Concept ;
+    bg:motivatedBy bg:Q4 .
+
+bg:MatchTypeScheme a skos:ConceptScheme ;
+    rdfs:label "Match type vocabulary"@en ;
+    skos:prefLabel "Match type vocabulary"@en ;
+    rdfs:comment """How a link was made. Two paths, never sharing a label: the exact path
+(identifier equality, or a unique normalised-name equality) and the
+semantic path (fuzzy, embedding, external alias). The arbiter rule:
+an identifier match always wins; a semantic match can never override a
+conflicting identifier (that is an abstention with reason
+IDENTIFIER_CONFLICT). bg:precedence orders the concepts for arbitration."""@en ;
+    skos:hasTopConcept bg:ExactPath, bg:SemanticPath .
+
+bg:precedence a owl:AnnotationProperty ;
+    rdfs:label "precedence"@en ;
+    rdfs:comment "Arbitration order, 1 = strongest."@en .
+
+bg:ExactPath a skos:Concept ; skos:inScheme bg:MatchTypeScheme ; skos:topConceptOf bg:MatchTypeScheme ;
+    skos:prefLabel "Exact path"@en ; skos:notation "EXACT_PATH" ;
+    skos:definition "Deterministic: equality on a validated identifier, or on a normalised name that hits exactly one canonical party."@en .
+
+bg:SemanticPath a skos:Concept ; skos:inScheme bg:MatchTypeScheme ; skos:topConceptOf bg:MatchTypeScheme ;
+    skos:prefLabel "Semantic path"@en ; skos:notation "SEMANTIC_PATH" ;
+    skos:definition "Probabilistic: string similarity, embedding similarity or third-party alias. Thresholded, abstains by default."@en .
+
+bg:EXACT_ABN a bg:MatchType, skos:Concept ; skos:inScheme bg:MatchTypeScheme ; skos:broader bg:ExactPath ;
+    skos:notation "EXACT_ABN" ; skos:prefLabel "Exact ABN"@en ; bg:precedence 1 ;
+    skos:definition "Record carries a checksum-valid ABN equal to the party's ABN."@en .
+bg:EXACT_ACN a bg:MatchType, skos:Concept ; skos:inScheme bg:MatchTypeScheme ; skos:broader bg:ExactPath ;
+    skos:notation "EXACT_ACN" ; skos:prefLabel "Exact ACN"@en ; bg:precedence 2 ;
+    skos:definition "Record carries a check-digit-valid ACN or ARBN equal to the party's, and the ACN is not quarantined."@en .
+bg:EXACT_LEI a bg:MatchType, skos:Concept ; skos:inScheme bg:MatchTypeScheme ; skos:broader bg:ExactPath ;
+    skos:notation "EXACT_LEI" ; skos:prefLabel "Exact LEI"@en ; bg:precedence 3 ;
+    skos:definition "Record carries a mod-97-valid LEI equal to the party's LEI."@en .
+bg:EXACT_LICENCE_NO a bg:MatchType, skos:Concept ; skos:inScheme bg:MatchTypeScheme ; skos:broader bg:ExactPath ;
+    skos:notation "EXACT_LICENCE_NO" ; skos:prefLabel "Exact licence number"@en ; bg:precedence 4 ;
+    skos:definition "Record carries an AFSL/ACL number held by the party on the record's date (interval-aware, because licences transfer)."@en .
+bg:NAME_NORMALISED_EXACT a bg:MatchType, skos:Concept ; skos:inScheme bg:MatchTypeScheme ; skos:broader bg:ExactPath ;
+    skos:notation "NAME_NORMALISED_EXACT" ; skos:prefLabel "Normalised name exact"@en ; bg:precedence 5 ;
+    skos:definition "Normalised record name equals the normalised name of exactly one canonical party of a compatible type. Two or more hits is an abstention (AMBIGUOUS)."@en .
+bg:NAME_FUZZY a bg:MatchType, skos:Concept ; skos:inScheme bg:MatchTypeScheme ; skos:broader bg:SemanticPath ;
+    skos:notation "NAME_FUZZY" ; skos:prefLabel "Fuzzy name"@en ; bg:precedence 6 ;
+    skos:definition "String similarity (token set, Jaro-Winkler) above threshold with distinctive-token overlap and a top-1 vs top-2 margin."@en .
+bg:NAME_SEMANTIC a bg:MatchType, skos:Concept ; skos:inScheme bg:MatchTypeScheme ; skos:broader bg:SemanticPath ;
+    skos:notation "NAME_SEMANTIC" ; skos:prefLabel "Semantic name"@en ; bg:precedence 7 ;
+    skos:definition "Embedding similarity above threshold, gated by distinctive-token overlap (so Commonwealth Bank of Australia does not match Commonwealth Superannuation Corporation)."@en .
+bg:WIKIDATA_ALIAS a bg:MatchType, skos:Concept ; skos:inScheme bg:MatchTypeScheme ; skos:broader bg:SemanticPath ;
+    skos:notation "WIKIDATA_ALIAS" ; skos:prefLabel "Wikidata alias"@en ; bg:precedence 8 ;
+    skos:definition "Record name equals a Wikidata alias or brand of an item whose ABN/ACN/LEI statement resolves to the party. Third-party asserted, so semantic path."@en .
+
+bg:AbstainReason a owl:Class ;
+    rdfs:label "Abstain reason"@en ;
+    rdfs:subClassOf skos:Concept ;
+    bg:motivatedBy bg:Q5 .
+
+bg:AbstainReasonScheme a skos:ConceptScheme ;
+    skos:prefLabel "Abstention reasons"@en .
+
+bg:NO_CANDIDATE a bg:AbstainReason, skos:Concept ; skos:inScheme bg:AbstainReasonScheme ; skos:notation "NO_CANDIDATE" ;
+    skos:definition "Blocking returned no candidate."@en .
+bg:BELOW_THRESHOLD a bg:AbstainReason, skos:Concept ; skos:inScheme bg:AbstainReasonScheme ; skos:notation "BELOW_THRESHOLD" ;
+    skos:definition "Best score below the threshold for this source and party type."@en .
+bg:AMBIGUOUS a bg:AbstainReason, skos:Concept ; skos:inScheme bg:AbstainReasonScheme ; skos:notation "AMBIGUOUS" ;
+    skos:definition "Top two candidates within the margin, or a normalised name shared by several parties."@en .
+bg:IDENTIFIER_CONFLICT a bg:AbstainReason, skos:Concept ; skos:inScheme bg:AbstainReasonScheme ; skos:notation "IDENTIFIER_CONFLICT" ;
+    skos:definition "Name points at one party, an identifier on the record points at another."@en .
+bg:PARTY_TYPE_CONFLICT a bg:AbstainReason, skos:Concept ; skos:inScheme bg:AbstainReasonScheme ; skos:notation "PARTY_TYPE_CONFLICT" ;
+    skos:definition "Record is a person and the candidate an organisation, or the reverse."@en .
+bg:QUARANTINED_TARGET a bg:AbstainReason, skos:Concept ; skos:inScheme bg:AbstainReasonScheme ; skos:notation "QUARANTINED_TARGET" ;
+    skos:definition "The only candidate carries a quarantined identifier (e.g. an ACN under two names)."@en .
+
+bg:LicenceKind a owl:Class ;
+    rdfs:label "Licence kind"@en ;
+    rdfs:subClassOf skos:Concept ;
+    bg:motivatedBy bg:Q3 .
+
+bg:LicenceKindScheme a skos:ConceptScheme ; skos:prefLabel "Licence kinds"@en .
+
+bg:AFSL a bg:LicenceKind, skos:Concept ; skos:inScheme bg:LicenceKindScheme ; skos:notation "AFSL" ;
+    skos:prefLabel "Australian Financial Services Licence"@en .
+bg:ACL a bg:LicenceKind, skos:Concept ; skos:inScheme bg:LicenceKindScheme ; skos:notation "ACL" ;
+    skos:prefLabel "Australian Credit Licence"@en .
+bg:REGISTERED_LIQUIDATOR a bg:LicenceKind, skos:Concept ; skos:inScheme bg:LicenceKindScheme ; skos:notation "RLIQ" ;
+    skos:prefLabel "Registered liquidator"@en .
+
+bg:RelationshipKind a owl:Class ;
+    rdfs:label "Relationship kind"@en ;
+    rdfs:subClassOf skos:Concept ;
+    bg:motivatedBy bg:Q1 .
+
+bg:RelationshipKindScheme a skos:ConceptScheme ; skos:prefLabel "Relationship kinds"@en .
+
+bg:IS_DIRECTLY_CONSOLIDATED_BY a bg:RelationshipKind, skos:Concept ; skos:inScheme bg:RelationshipKindScheme ;
+    skos:notation "IS_DIRECTLY_CONSOLIDATED_BY" ; skos:prefLabel "Directly consolidated by"@en ;
+    skos:closeMatch gleif-L2:DirectConsolidation ;
+    skos:definition "GLEIF L2 direct accounting consolidation. The edge the ultimate-parent traversal follows."@en .
+bg:IS_ULTIMATELY_CONSOLIDATED_BY a bg:RelationshipKind, skos:Concept ; skos:inScheme bg:RelationshipKindScheme ;
+    skos:notation "IS_ULTIMATELY_CONSOLIDATED_BY" ; skos:prefLabel "Ultimately consolidated by"@en ;
+    skos:closeMatch gleif-L2:UltimateConsolidation ;
+    skos:definition "GLEIF L2 asserted ultimate parent. A shortcut, used to cross-check the traversal, never followed as a hop."@en .
+bg:IS_INTERNATIONAL_BRANCH_OF a bg:RelationshipKind, skos:Concept ; skos:inScheme bg:RelationshipKindScheme ;
+    skos:notation "IS_INTERNATIONAL_BRANCH_OF" ; skos:prefLabel "International branch of"@en ;
+    skos:closeMatch gleif-L2:InternationalBranchRelationship .
+bg:SHAREHOLDING a bg:RelationshipKind, skos:Concept ; skos:inScheme bg:RelationshipKindScheme ;
+    skos:notation "SHAREHOLDING" ; skos:prefLabel "Shareholding"@en ;
+    skos:definition "Equity holding with a percentage, e.g. from annual report subsidiary notes."@en .
+bg:ACTS_FOR a bg:RelationshipKind, skos:Concept ; skos:inScheme bg:RelationshipKindScheme ;
+    skos:notation "ACTS_FOR" ; skos:prefLabel "Acts for"@en ;
+    skos:definition "Person acts for an organisation (liquidator firm, employer)."@en .

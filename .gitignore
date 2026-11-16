@@ -1,0 +1,21 @@
+# Environments and toolchain
+.venv/
+tools/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Data (large, regenerable; never commit raw source files)
+data/
+*.duckdb
+*.duckdb.wal
+fuseki/run/
+fuseki/run-*/
+fuseki/databases/
+
+# Editor
+.vscode/
+.idea/
+
+# Generated Python package metadata
+*.egg-info/
