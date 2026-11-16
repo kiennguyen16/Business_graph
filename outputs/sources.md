@@ -128,3 +128,85 @@ Notes:
 * Verdict: **yes**. CC0 confirmed for the statements we would query (aliases, websites, parent
   organisation). Wikimedia's query service has a usage policy (User-Agent, rate limits) that applies
   to access, not to reuse.
+
+## ACCC fetch log
+
+Collector rules: `robots.txt` first, only allowed paths (plain listing `?page=N` and entry pages under
+`/public-registers/infringement-notices-register/`, never facet `?f[...]` URLs or `/search`), at least
+2 s between requests, descriptive generic User-Agent (`bizgraph-research-bot/0.1 (non-commercial
+evaluation; polite crawler)`), raw HTML cached under `data/raw/accc_notice/` (`listing/`, `notices/`).
+
+| When (AEDT) | URL | Result |
+|---|---|---|
+| 2026-11-17 | https://www.accc.gov.au/robots.txt | 200, saved to `data/raw/accc_notice/robots.txt`. No `Crawl-delay`; `/public-registers/` allowed; `/*?f[*`, `/*&f[*`, `/search` disallowed (unchanged from the licence review above) |
+| 2026-11-17 | https://www.accc.gov.au/public-registers/infringement-notices-register | **403 Access Denied** from the CDN (Akamai, reference in `data/raw/accc_notice/fetch_403_20261117.html.txt`) |
+
+Outcome of the automated attempt: **nothing collected**. The register is allowed by `robots.txt`
+and the content is CC BY 4.0, but the site's CDN refuses automated clients that identify themselves
+honestly. Disguising the client as a browser to get past that block was not done: the block
+expresses the operator's intent even though `robots.txt` does not. No further automated requests
+were made.
+
+### Sample obtained through the user's browser (2026-11-17)
+
+| When (AEDT) | What | Result |
+|---|---|---|
+| 2026-11-17 | Register landing page and the 20 entry pages it links (the most recent notices), opened in the user's own browser session, about 3 s apart | 20 notices, saved as `data/raw/accc_notice/extract_20261117.txt` |
+
+* Scope: landing-page notices only. The "View all" listing is built from facet URLs (`?f[0]=...`)
+  that `robots.txt` disallows, so it was not opened; `/search` was not used.
+* Format: raw HTML could not be transferred out of the browser session, so the page fields were
+  recorded exactly as displayed, one notice per line (`slug|field=value|...`, Drupal field machine
+  names `infringe-date-paid`, `infringe-number`, `infringe-section`, `name`, `acn`, `abn`,
+  `reference-number`, plus the listing title `list_title`). The file header records this.
+* Coverage: dates paid 16 June 2026 to 5 November 2026; 20 entries for 14 distinct recipients (one
+  company can have several entries: Venue Smart 3, Dysck, HSK United, Marshall Freeman, Vacaciones
+  eDreams 2 each). All recipients are organisations; none is multi-party. The 20 entries list 40 infringement notice numbers.
+* Identifiers stated on the page: ACN only 13, ABN only 4, both 1 (WeFlex, ABN tail equals ACN),
+  none 2 (Vacaciones eDreams, S.L., a Spanish company showing only a CIF in `reference-number`).
+  All 19 stated numbers pass their checksum.
+* No entry page states a penalty amount; the only date is the date the notice was paid.
+* Licence: CC BY 4.0, attribution "Source: ACCC (c) Commonwealth of Australia". A copy is a test
+  fixture (`tests/fixtures/tier3/accc_notice/extract_20261117.txt`).
+
+The adapter also still parses cached HTML entry pages (`data/raw/accc_notice/notices/*.html`), so
+pages saved later with the same rules can be added without code changes.
+
+## ASIC licence history (AFSL and credit snapshots)
+
+The AFS licensee file lists current licences only and the credit file lists approved / suspended
+licences only, so cancellations have to be inferred by diffing snapshots
+(`src/bizgraph/pipeline/licence_history.py`).
+
+Where the history comes from: data.gov.au does **not** keep older files. CKAN `package_show` for
+`asic-afs-licensee` and `asic-credit-licensee` lists only the current resource (one CSV, TSV, XLSX
+each; the AFSL file is replaced weekly, see `package_activity_list`). The resource download URL
+ignores its filename and always serves the current file (checked: `.../download/afs_lic_202610.csv`
+returns the November file by ETag), and old package revisions (`activity_show`) need an editor
+login. Older files were therefore taken from the **Internet Archive Wayback Machine** captures of
+the same data.gov.au download URLs (`https://web.archive.org/web/<timestamp>id_/<url>`), which are
+byte copies of the CC BY 3.0 AU files. Saved with the original dated filename plus the capture
+date:
+
+| File | Snapshot date used | Rows | sha256 (16) |
+|---|---|---|---|
+| `data/raw/asic_afsl/history/afs_lic_202504__wb20250414.csv` | 2025-04-14 | 6,469 | a5d0b89f0fc63dac |
+| `data/raw/asic_afsl/history/afs_lic_202511__wb20251129.csv` | 2025-11-29 | 6,459 | 97d69eba3f146f42 |
+| `data/raw/asic_afsl/history/afs_lic_202512__wb20251208.csv` | 2025-12-08 | 6,463 | e9a827bdfb9772f8 |
+| `data/raw/asic_afsl/history/afs_lic_202602__wb20260224.csv` | 2026-02-24 | 6,486 | 8df4bc5422f82771 |
+| `data/raw/asic_afsl/history/afs_lic_202610__wb20261102.csv` | 2026-11-02 | 6,541 | 64daf180ce2235e7 |
+| `data/raw/asic_afsl/history/afs_lic_202611__wb20261110.csv` | 2026-11-10 | 6,548 | 6c23e63645a1479b |
+| `data/raw/asic_afsl/afs_lic_202611.csv` (current, already present) | 2026-11-11 (CKAN last_modified) | 6,551 | |
+| `data/raw/asic_credit/history/credit_lic_202510__wb20251021.csv` | 2025-10-21 | 4,469 | b61983d76d8fab14 |
+| `data/raw/asic_credit/history/credit_lic_202511__wb20251129.csv` | 2025-11-29 | 4,478 | 8ec0c093f7e28794 |
+| `data/raw/asic_credit/credit_lic_202611.csv` (current, already present) | 2026-11-15 (CKAN last_modified) | 4,308 | |
+
+The snapshot date is the archive capture date (an upper bound for the file's publication date).
+The `202510` credit capture was stored gzip-encoded and was decompressed after download.
+
+Gaps that matter for "cancelled in the last 3 months": there is **no AFSL capture between
+2026-02-24 and 2026-11-02**, and no credit capture between 2025-11-29 and 2026-11-15. A licence
+that vanished in that window gets `event_date` 2026-11-02 (AFSL) or 2026-11-15 (credit), with
+`observed_after` showing the true lower bound; only the 2026-11-02 to 2026-11-11 AFSL steps are
+week-precise. From now on, loading every weekly file (ASIC publishes each Wednesday) closes this.
+Wayback captures are irregular, so this history is opportunistic, not complete.

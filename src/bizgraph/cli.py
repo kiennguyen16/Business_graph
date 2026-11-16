@@ -44,7 +44,34 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         return 2
     snapshot = date.fromisoformat(args.snapshot_date) if args.snapshot_date else date.today()
     with _store(args) as store:
-        stats = adapter.run(path, snapshot, store)
+        if args.tier2_allowlist or args.acn_conflict_scan:
+            import time
+
+            from bizgraph.pipeline.canonical import tier2_reference_ids
+            from bizgraph.sources.adapters.tier1 import AbrAdapter
+
+            if not isinstance(adapter, AbrAdapter):
+                print("--tier2-allowlist / --acn-conflict-scan only apply to the abr source", file=sys.stderr)
+                return 2
+            abns: set[str] = set()
+            acns: set[str] = set()
+            if args.tier2_allowlist:
+                abns, acns = tier2_reference_ids(store.con)
+                print(f"tier2 allowlist: {len(abns):,} ABNs, {len(acns):,} ACNs")
+            if args.acn_conflict_scan:
+                t0 = time.perf_counter()
+                shared = AbrAdapter.shared_acn_abns(path, workers=args.workers)
+                extra = {abn for group in shared.values() for abn in group}
+                print(f"acn conflict scan: {len(shared):,} ACNs on 2+ ABNs, {len(extra):,} ABNs "
+                      f"added ({time.perf_counter() - t0:.1f}s)")
+                for acn, group in shared.items():
+                    print(f"  {acn}: {', '.join(group)}")
+                abns |= extra
+            adapter = AbrAdapter(abn_allowlist=abns, acn_allowlist=acns)
+        if args.workers and args.workers > 1 and hasattr(adapter, "run_parallel"):
+            stats = adapter.run_parallel(path, snapshot, store, workers=args.workers, force=args.force)
+        else:
+            stats = adapter.run(path, snapshot, store, force=args.force)
     if stats.skipped_snapshot:
         print(f"{stats.source}: snapshot already ingested (same file hash), skipped")
         return 0
@@ -53,6 +80,17 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         f"unchanged={stats.records_unchanged} rejected={stats.records_rejected} "
         f"top_reject={stats.top_rejection_reason or '-'} time={stats.wall_clock_s:.1f}s"
     )
+    return 0
+
+
+def cmd_build_canonical(args: argparse.Namespace) -> int:
+    import json
+
+    from bizgraph.pipeline.canonical import CanonicalBuilder
+
+    with _store(args) as store:
+        stats = CanonicalBuilder(store).build()
+    print(json.dumps(stats.as_dict(), indent=2, default=str))
     return 0
 
 
@@ -200,7 +238,7 @@ def cmd_validate_shacl(args: argparse.Namespace) -> int:
             else:
                 versions = exporter.matcher_versions()
                 mv = args.matcher_version or (versions[-1] if versions else None)
-                graphs = exporter.graphs(["source", "canonical"]) + (exporter.graphs(["links"], matcher_version=mv) if mv else [])
+                graphs = exporter.graphs(["source", "canonical", "derived"]) + (exporter.graphs(["links"], matcher_version=mv) if mv else [])
             files = []
             for g in graphs:
                 if g.kind == "ontology":
@@ -265,6 +303,144 @@ def _add_rdf_commands(sub) -> None:
     sh.set_defaults(func=cmd_validate_shacl, kind="all")
 
 
+# --------------------------------------------------------------------------- query services
+
+
+def _service_store(args: argparse.Namespace):
+    """Read-only DuckDB for the services, or None with --no-db (or when it cannot be opened)."""
+    if getattr(args, "no_db", False):
+        return None
+    try:
+        return _ro_store(args)
+    except Exception as exc:  # noqa: BLE001 (a locked or missing DB downgrades, it does not fail)
+        print(f"note: DuckDB not available ({exc}); tabular predicates are disabled", file=sys.stderr)
+        return None
+
+
+def _json_out(obj, path: str | None) -> None:
+    import json
+
+    text = json.dumps(obj, indent=2, default=str, ensure_ascii=False)
+    if path:
+        Path(path).write_text(text, encoding="utf-8")
+        print(f"wrote {path}")
+    else:
+        print(text)
+
+
+def cmd_ultimate_parent(args: argparse.Namespace) -> int:
+    from bizgraph.services.traversal import TraversalService
+    from bizgraph.store.fuseki import FusekiClient
+
+    svc = TraversalService(FusekiClient(get_settings()), matcher_version=args.matcher_version)
+    as_of = date.fromisoformat(args.as_of) if args.as_of else None
+    chain = svc.ultimate_parent(args.key, as_of=as_of, max_depth=args.max_depth)
+    print(chain.summary())
+    for e in chain.edges:
+        pct = f" {e.percentage}%" if e.percentage is not None else ""
+        print(f"  {e.child} -[{e.kind}{pct} {e.valid_from or ''}..{e.valid_to or ''} rule={e.rule}]-> {e.parent}")
+        print(f"      fact {e.fact} in {e.source_graph}")
+    for e in chain.ambiguous_parents:
+        print(f"  ambiguous parent: {e.parent} ({e.percentage}%) via {e.fact}")
+    print(f"GLEIF ultimate: {[n.short() for n in chain.gleif_ultimate]} -> {chain.gleif_check}")
+    print(f"links graph: {chain.links_graph}; {chain.queries} queries, {chain.elapsed_ms:.0f} ms")
+    if args.json:
+        _json_out(chain.as_dict(), args.json)
+    return 0 if chain.status != "NOT_FOUND" else 1
+
+
+def cmd_entity(args: argparse.Namespace) -> int:
+    from bizgraph.services.traversal import TraversalBudget, TraversalService
+    from bizgraph.store.fuseki import FusekiClient
+
+    svc = TraversalService(FusekiClient(get_settings()), matcher_version=args.matcher_version)
+    budget = TraversalBudget()
+    for item in args.cap or []:
+        name, _, n = item.partition("=")
+        budget.per_fact_type[name] = int(n)
+    view = svc.entity_view(args.key, budget, as_of=date.fromisoformat(args.as_of) if args.as_of else None)
+    if view is None:
+        print(f"not found: {args.key}", file=sys.stderr)
+        return 1
+    if args.json:
+        _json_out(view.as_dict(), args.json if args.json != "-" else None)
+        return 0
+    p = view.party
+    print(f"{p.name} [{p.key}] ({p.kind}, attribution={p.attribution}) links graph={view.links_graph}")
+    print("identifiers: " + ", ".join(f"{i['scheme']}={i['value']}" for i in view.identifiers))
+    print("source records:")
+    for r in view.source_records:
+        print(f"  {r['record']} ({r['source']}, {r['joined_by']}) {r.get('name') or ''}")
+    for cat, items in view.facts_by_type.items():
+        print(f"{cat} ({view.totals.get(cat, len(items))}):")
+        for f in items:
+            d = f.detail
+            what = d.get("licence_kind") and f"{d['licence_kind']} {d.get('licence_number')}" or f.other_name or f.other or ""
+            print(f"  {'active ' if f.active else 'history'} {f.valid_from or ''}..{f.valid_to or ''} {what} "
+                  f"[{f.attribution}] {f.fact}")
+    print(f"truncated: {view.truncation_note()} ({view.elapsed_ms:.0f} ms)")
+    return 0
+
+
+def cmd_project(args: argparse.Namespace) -> int:
+    from bizgraph.services.projection import NAMED_SPECS, ProjectionService, load_spec, write_projection
+    from bizgraph.store.fuseki import FusekiClient
+
+    if args.list:
+        for name, spec in NAMED_SPECS.items():
+            print(f"{name}: {spec['description']}")
+        return 0
+    if not args.spec:
+        print("give a spec file or a named spec (--list)", file=sys.stderr)
+        return 2
+    spec = load_spec(args.spec, date.fromisoformat(args.as_of) if args.as_of else None)
+    store = _service_store(args)
+    try:
+        svc = ProjectionService(FusekiClient(get_settings()), store, matcher_version=args.matcher_version)
+        if args.explain:
+            print(svc.plan(spec).explain())
+            return 0
+        df = svc.project(spec)
+    finally:
+        if store is not None:
+            store.con.close()
+    print(f"{len(df)} rows ({svc.last_run.get('elapsed_ms', 0):.0f} ms, links graph {svc.links_graph})")
+    if args.out:
+        print(f"wrote {write_projection(df, args.out)}")
+    else:
+        print(df.head(args.head).to_string(index=False))
+    return 0
+
+
+def _add_service_commands(sub) -> None:
+    up = sub.add_parser("ultimate-parent", help="bounded ultimate-parent walk (LEI, ABN, ACN or IRI)")
+    up.add_argument("key")
+    up.add_argument("--as-of", help="YYYY-MM-DD validity date (default: today, current relationships only)")
+    up.add_argument("--max-depth", type=int, default=10)
+    up.add_argument("--matcher-version", help="links graph to use (default: latest loaded)")
+    up.add_argument("--json", help="also write the chain as JSON to this path")
+    up.set_defaults(func=cmd_ultimate_parent)
+
+    en = sub.add_parser("entity", help="entity view: identifiers, records, licences, bans, parents, subsidiaries")
+    en.add_argument("key")
+    en.add_argument("--as-of", help="YYYY-MM-DD (ranks active facts first)")
+    en.add_argument("--cap", action="append", help="per fact-type cap, e.g. --cap subsidiaries=50 (repeatable)")
+    en.add_argument("--matcher-version")
+    en.add_argument("--json", help="write the view as JSON ('-' for stdout)")
+    en.set_defaults(func=cmd_entity)
+
+    pr = sub.add_parser("project", help="run a CriteriaSpec (JSON file or named spec) into a dataset")
+    pr.add_argument("spec", nargs="?", help="spec.json or a named spec (see --list)")
+    pr.add_argument("--list", action="store_true", help="list named specs")
+    pr.add_argument("--as-of", help="override the spec's as_of date")
+    pr.add_argument("--out", help="write CSV or Parquet (by extension)")
+    pr.add_argument("--explain", action="store_true", help="print the plan (SPARQL and SQL) and exit")
+    pr.add_argument("--matcher-version")
+    pr.add_argument("--no-db", action="store_true", help="do not open DuckDB (graph predicates only)")
+    pr.add_argument("--head", type=int, default=20)
+    pr.set_defaults(func=cmd_project)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bizgraph", description="AU/NZ business graph tooling")
     p.add_argument("--db", help="DuckDB file (default: settings.db_path / BIZGRAPH_DB)")
@@ -276,11 +452,24 @@ def build_parser() -> argparse.ArgumentParser:
     ing.add_argument("source_id")
     ing.add_argument("path")
     ing.add_argument("--snapshot-date", help="YYYY-MM-DD (default: today)")
+    ing.add_argument("--workers", type=int, default=1,
+                     help="parallel parse processes (sources with run_parallel, e.g. abr: one per XML member)")
+    ing.add_argument("--acn-conflict-scan", action="store_true",
+                     help="abr only: first scan the full extract for ACNs on 2+ ABNs and keep all of them")
+    ing.add_argument("--tier2-allowlist", action="store_true",
+                     help="abr only: also keep every ABN/ACN referenced by loaded Tier 2 sources")
+    ing.add_argument("--force", action="store_true",
+                     help="re-ingest even if this file hash was already loaded (refreshes derived fields)")
     ing.set_defaults(func=cmd_ingest)
+
+    sub.add_parser(
+        "build-canonical", help="rebuild party_canonical, identifier, alias and identity quarantine"
+    ).set_defaults(func=cmd_build_canonical)
 
     sub.add_parser("stats", help="row counts per table and per source").set_defaults(func=cmd_stats)
     sub.add_parser("fuseki-ping", help="check Fuseki is reachable").set_defaults(func=cmd_fuseki_ping)
     _add_rdf_commands(sub)
+    _add_service_commands(sub)
     return p
 
 

@@ -222,8 +222,28 @@ def test_abr_individual_name_assembly(tmp_path):
     assert out[ab[3]].name_raw == "ANNE LEE"
 
 
+@pytest.mark.finding
+@pytest.mark.parametrize(
+    "etype,abn,name,asic",
+    [
+        # Real records: the ASICNumber is the corporate TRUSTEE's / another body's ACN (that ACN has its own ABN).
+        ("TRT", "41877448580", "The Trustee for ICM ELECTRICS TRUST", "059820281"),
+        ("PTR", "31199125391", "MARK &amp; AMANDA CATHERINE SELBY", "154100651"),
+    ],
+)
+def test_abr_trust_or_partnership_does_not_take_another_entitys_acn(tmp_path, etype, abn, name, asic):
+    """A trust / partnership is not a company. When its ASICNumber is not ABN[2:], it is
+    another legal entity's ACN; emitting it as this party's ACN identifier makes the exact
+    ACN path merge the trust with its trustee company."""
+    f = abr_file(tmp_path / "a.xml", [abr_record(abn, etype=etype, org_name=name, asic=asic)])
+    (rec, _), = run_abr(f, states="*", statuses="*")[0]
+    assert rec.identifier(IdScheme.ACN) is None
+
+
+@pytest.mark.finding
 def test_abr_individual_never_gets_acn(tmp_path):
-    """An individual cannot hold an ACN; a 9-digit ASICNumber on IND must not become one."""
+    """An individual cannot hold an ACN; a 9-digit ASICNumber on IND must not become one.
+    Latent: 0 of 11.24M IND records carry an ASICNumber in the 2026-11-11 extract."""
     f = abr_file(tmp_path / "a.xml", [abr_record(_ind_abn(0), etype="IND", person=(None, ["A"], "B"), asic=ACN_B)])
     (rec, _), = run_abr(f, states="*", statuses="*")[0]
     assert rec.identifier(IdScheme.ACN) is None
@@ -242,7 +262,8 @@ def test_abr_invalid_asic_number_yields_no_acn_but_keeps_record(tmp_path, asic):
 def test_abr_all_zero_asic_number_is_not_an_acn(tmp_path):
     """'000000000' passes the ACN check digit (sum 0 -> check 0) but is not an ACN.
 
-    Emitting it makes every record carrying it share one exact-match key.
+    Emitting it makes every record carrying it share one exact-match key. Real case:
+    ABN 43695732660 (PUB, THE AUSTRALIAN BIRTHRIGHT MOVEMENT, CAN) has ASICNumber 000000000.
     """
     f = abr_file(tmp_path / "a.xml", [abr_record(ABN_B, asic="000000000")])
     (rec, _), = run_abr(f, states="*", statuses="*")[0]

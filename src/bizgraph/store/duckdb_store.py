@@ -162,6 +162,8 @@ CREATE TABLE IF NOT EXISTS abstention (
     created_at      TIMESTAMP DEFAULT current_timestamp,
     PRIMARY KEY (matcher_version, source, record_id)
 );
+-- Why the matcher refused (explanation, best candidate features, query text); written by bizgraph.resolution.
+ALTER TABLE abstention ADD COLUMN IF NOT EXISTS evidence JSON;
 
 CREATE TABLE IF NOT EXISTS label (
     sample_id     VARCHAR NOT NULL,

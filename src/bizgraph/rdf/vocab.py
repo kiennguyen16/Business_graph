@@ -40,6 +40,7 @@ SH = "http://www.w3.org/ns/shacl#"
 
 GRAPH_CANONICAL = "urn:graph:canonical"
 GRAPH_ONTOLOGY = "urn:graph:ontology"
+GRAPH_LICENCE_HISTORY = "urn:graph:derived:licence_history"
 
 
 def iri(value: str) -> str:
@@ -58,6 +59,7 @@ XSD_STRING = f"{XSD}string"
 XSD_DATE = f"{XSD}date"
 XSD_DECIMAL = f"{XSD}decimal"
 XSD_INTEGER = f"{XSD}integer"
+XSD_ANYURI = f"{XSD}anyURI"
 
 
 class P:
@@ -81,7 +83,19 @@ class P:
     abn = bg("abn")
     acn = bg("acn")
     arbn = bg("arbn")
+    arsn = bg("arsn")
+    nzbn = bg("nzbn")
+    nzCompanyNumber = bg("nzCompanyNumber")
     lei = bg("lei")
+    # record-only identifiers (licence / registration numbers move between holders)
+    afslNumber = bg("afslNumber")
+    aclNumber = bg("aclNumber")
+    liquidatorNumber = bg("liquidatorNumber")
+    # descriptive attributes, on parties and records
+    country = bg("country")
+    legalJurisdiction = bg("legalJurisdiction")
+    legalFormCode = bg("legalFormCode")
+    leiRegistrationStatus = bg("leiRegistrationStatus")
     # source record / snapshot
     sourceId = bg("sourceId")
     recordId = bg("recordId")
@@ -94,8 +108,12 @@ class P:
     # facts
     validFrom = bg("validFrom")
     validTo = bg("validTo")
+    validToNotBefore = bg("validToNotBefore")
+    validToNotAfter = bg("validToNotAfter")
     aboutRecord = bg("aboutRecord")
     counterpartyRecord = bg("counterpartyRecord")
+    counterpartyAcn = bg("counterpartyAcn")
+    counterpartyName = bg("counterpartyName")
     description = bg("description")
     licenceNumber = bg("licenceNumber")
     licenceKind = bg("licenceKind")
@@ -104,12 +122,23 @@ class P:
     banType = bg("banType")
     relationshipKind = bg("relationshipKind")
     relationshipStatus = bg("relationshipStatus")
+    amountAud = bg("amountAud")
+    regulator = bg("regulator")
+    infringementNumber = bg("infringementNumber")
+    noticeCount = bg("noticeCount")
+    legislation = bg("legislation")
+    sourceUrl = bg("sourceUrl")
+    foreignReference = bg("foreignReference")
     ownershipPercentage = bg("ownershipPercentage")
     # party-level roles (links graph only)
     licensee = bg("licensee")
     bannedParty = bg("bannedParty")
+    noticeRecipient = bg("noticeRecipient")
+    member = bg("member")
     owner = bg("owner")
     owned = bg("owned")
+    trust = bg("trust")
+    trustee = bg("trustee")
     # resolution
     sourceRecord = bg("sourceRecord")
     matchedRecord = bg("matchedRecord")
@@ -128,17 +157,23 @@ class C:
 
     Party = bg("Party")
     Organisation = bg("Organisation")
+    ManagedInvestmentScheme = bg("ManagedInvestmentScheme")
     Person = bg("Person")
     SourceRecord = bg("SourceRecord")
     SourceSnapshot = bg("SourceSnapshot")
     Licence = bg("Licence")
     Ban = bg("Ban")
+    InfringementNotice = bg("InfringementNotice")
     Ownership = bg("Ownership")
+    Trusteeship = bg("Trusteeship")
+    Affiliation = bg("Affiliation")
     Link = bg("Link")
     Abstention = bg("Abstention")
     AFSL = bg("AFSL")
     ACL = bg("ACL")
     REGISTERED_LIQUIDATOR = bg("REGISTERED_LIQUIDATOR")
+    HAS_TRUSTEE = bg("HAS_TRUSTEE")
+    ACTS_FOR = bg("ACTS_FOR")
 
 
 MATCH_TYPES = frozenset(
@@ -151,7 +186,8 @@ ABSTAIN_REASONS = frozenset(
     {"NO_CANDIDATE", "BELOW_THRESHOLD", "AMBIGUOUS", "IDENTIFIER_CONFLICT", "PARTY_TYPE_CONFLICT", "QUARANTINED_TARGET"}
 )
 RELATIONSHIP_KINDS = frozenset(
-    {"IS_DIRECTLY_CONSOLIDATED_BY", "IS_ULTIMATELY_CONSOLIDATED_BY", "IS_INTERNATIONAL_BRANCH_OF", "SHAREHOLDING", "ACTS_FOR"}
+    {"IS_DIRECTLY_CONSOLIDATED_BY", "IS_ULTIMATELY_CONSOLIDATED_BY", "IS_INTERNATIONAL_BRANCH_OF", "SHAREHOLDING", "ACTS_FOR",
+     "HAS_TRUSTEE"}
 )
 
 # --------------------------------------------------------------------------- literals
@@ -282,6 +318,19 @@ class IriFactory:
     def fact(source: str, record_id: str, n: int | None = None) -> str:
         base = f"urn:fact:{seg(source)}:{seg(record_id)}"
         return base if n is None else f"{base}:{n}"
+
+    @staticmethod
+    def ended_licence(source: str, record_id: str, event_date: date | str) -> str:
+        d = event_date.isoformat() if isinstance(event_date, date) else str(event_date)
+        return f"urn:fact:{seg(source)}:{seg(record_id)}:ended:{d}"
+
+    @staticmethod
+    def affiliation(source: str, record_id: str) -> str:
+        return f"urn:fact:{seg(source)}:{seg(record_id)}:affiliation"
+
+    @staticmethod
+    def trusteeship(lei: str) -> str:
+        return f"urn:fact:gleif_l1:{seg(lei)}:trustee"
 
     @staticmethod
     def link(matcher_version: str, source: str, record_id: str) -> str:

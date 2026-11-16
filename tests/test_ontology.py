@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from pyshacl import validate
 from rdflib import RDF, Graph, Literal, Namespace, URIRef
-from rdflib.namespace import OWL, SKOS
+from rdflib.namespace import OWL, RDFS, SKOS
 
 ONT_DIR = Path(__file__).resolve().parents[1] / "ontology"
 BG = Namespace("https://w3id.org/bizgraph/ont#")
@@ -152,12 +152,38 @@ def test_every_term_in_shapes_is_defined_in_schema(schema: Graph, shapes: Graph)
     assert not missing, f"shapes reference undefined terms: {missing}"
 
 
-def test_every_bg_predicate_in_examples_is_defined(schema: Graph, examples: Graph):
-    defined = set(schema.subjects())
-    used = {p for p in examples.predicates() if str(p).startswith(str(BG))}
-    used |= {o for o in examples.objects(None, RDF.type) if str(o).startswith(str(BG))}
-    missing = sorted(str(u) for u in used if u not in defined)
+def test_every_predicate_in_examples_is_declared(schema: Graph, examples: Graph):
+    """Every predicate (any namespace, incl. prov:wasDerivedFrom) except rdf:type is a
+    declared OWL property in schema.ttl; every bg: class used is defined."""
+    used = {p for p in examples.predicates() if p != RDF.type}
+    for p in used:
+        kinds = set(schema.objects(p, RDF.type))
+        assert kinds & {OWL.DatatypeProperty, OWL.ObjectProperty}, p
+    classes = {o for o in examples.objects(None, RDF.type) if str(o).startswith(str(BG))}
+    missing = sorted(str(c) for c in classes if (c, RDF.type, OWL.Class) not in schema)
     assert not missing, missing
+
+
+def test_record_and_party_identifier_domains(schema: Graph):
+    """Party identifiers are shared by parties and records; licence numbers are record-only."""
+    for name in ("abn", "acn", "arbn", "arsn", "nzbn", "nzCompanyNumber", "lei"):
+        assert schema.value(BG[name], RDFS.domain) == BG.PartyOrRecord, name
+    for name in ("afslNumber", "aclNumber", "liquidatorNumber"):
+        assert schema.value(BG[name], RDFS.domain) == BG.SourceRecord, name
+    for name in ("state", "registrationStatus", "country", "legalJurisdiction",
+                 "legalFormCode", "leiRegistrationStatus", "entityType", "otherName"):
+        assert schema.value(BG[name], RDFS.domain) == BG.PartyOrRecord, name
+    assert (BG.ManagedInvestmentScheme, RDFS.subClassOf, BG.Organisation) in schema
+
+
+def test_trusteeship_is_a_relationship_extension(schema: Graph, examples: Graph):
+    assert (BG.Trusteeship, RDFS.subClassOf, BG.Relationship) in schema
+    assert (BG.trust, RDFS.subPropertyOf, BG.subject) in schema
+    assert (BG.trustee, RDFS.subPropertyOf, BG.counterparty) in schema
+    assert (BG.HAS_TRUSTEE, RDF.type, BG.RelationshipKind) in schema
+    t = URIRef("urn:fact:gleif_l1:9845EXAMPLE000000405:trustee")
+    assert (t, RDF.type, BG.Trusteeship) in examples
+    assert examples.value(t, BG.trustee) == SCA
 
 
 # --------------------------------------------------------------------------
@@ -283,7 +309,103 @@ MUTATIONS = {
     "party_without_provenance": (
         "<urn:abn:12884213570> a bg:Person ; bg:name 'SAM SOLE TRADER' ; bg:abn '12884213570' .",
         "urn:abn:12884213570"),
+    # --- identifiers added in v0.2
+    "arsn_format": ("<urn:src:abr:38610001119> bg:arsn '61000222' .", "urn:src:abr:38610001119"),
+    "nzbn_format": ("<urn:src:abr:38610001119> bg:nzbn '9512345678901' .", "urn:src:abr:38610001119"),
+    "nz_company_number_format": ("<urn:src:abr:38610001119> bg:nzCompanyNumber '01234' .",
+                                 "urn:src:abr:38610001119"),
+    "afsl_number_format": ("<urn:src:asic_afsl:512345> bg:afslNumber '0512345' .",
+                           "urn:src:asic_afsl:512345"),
+    "arsn_on_non_scheme_party": ("<urn:lei:9845EXAMPLE000000405> bg:arsn '610002223' .",
+                                 "urn:lei:9845EXAMPLE000000405"),
+    "scheme_with_acn": (
+        "<urn:arsn:610002223> a bg:ManagedInvestmentScheme ; bg:name 'X FUND' ; bg:arsn '610002223' ; "
+        "bg:acn '610002223' ; prov:wasDerivedFrom <urn:src:abr:38610001119> .",
+        "urn:arsn:610002223"),
+    "nzbn_used_by_two_parties": (
+        "<urn:lei:9845EXAMPLE000000211> bg:nzbn '9429000000001' . "
+        "<urn:lei:9845EXAMPLE000000308> bg:nzbn '9429000000001' .",
+        "urn:lei:9845EXAMPLE000000308"),
+    # --- trusteeship
+    "trusteeship_two_counterparty_refs": (
+        "<urn:fact:gleif_l1:9845EXAMPLE000000405:trustee> "
+        "bg:counterpartyRecord <urn:src:asic_company:610001119> .",
+        "urn:fact:gleif_l1:9845EXAMPLE000000405:trustee"),
+    "trusteeship_no_counterparty": (
+        "<urn:fact:t> a bg:Trusteeship ; bg:relationshipKind bg:HAS_TRUSTEE ; "
+        "bg:aboutRecord <urn:src:gleif_l1:9845EXAMPLE000000405> ; "
+        "prov:wasDerivedFrom <urn:src:gleif_l1:9845EXAMPLE000000405> .",
+        "urn:fact:t"),
+    "trustee_not_backed_by_acn": (
+        "<urn:fact:gleif_l1:9845EXAMPLE000000405:trustee> bg:trustee <urn:lei:9845EXAMPLE000000211> .",
+        "urn:fact:gleif_l1:9845EXAMPLE000000405:trustee"),
+    "trusteeship_wrong_kind": (
+        "<urn:fact:gleif_l1:9845EXAMPLE000000405:trustee> bg:relationshipKind bg:ACTS_FOR .",
+        "urn:fact:gleif_l1:9845EXAMPLE000000405:trustee"),
+    "trust_is_its_own_trustee": (
+        "<urn:fact:t> a bg:Trusteeship ; bg:relationshipKind bg:HAS_TRUSTEE ; "
+        "bg:aboutRecord <urn:src:gleif_l1:9845EXAMPLE000000405> ; bg:counterpartyLei '9845EXAMPLE000000405' ; "
+        "prov:wasDerivedFrom <urn:src:gleif_l1:9845EXAMPLE000000405> ; "
+        "bg:trust <urn:lei:9845EXAMPLE000000405> ; bg:trustee <urn:lei:9845EXAMPLE000000405> .",
+        "urn:fact:t"),
+    # --- interval-uncertain validity bounds
+    "valid_to_bounds_inverted": (
+        "<urn:fact:asic_credit:398765> bg:validToNotBefore '2026-10-20'^^xsd:date .",
+        "urn:fact:asic_credit:398765"),
+    "valid_to_after_not_after": (
+        "<urn:fact:asic_credit:398765> bg:validTo '2026-10-30'^^xsd:date .",
+        "urn:fact:asic_credit:398765"),
+    "valid_to_before_not_before": (
+        "<urn:fact:asic_credit:398765> bg:validTo '2026-10-01'^^xsd:date .",
+        "urn:fact:asic_credit:398765"),
+    "valid_from_bounds_inverted": (
+        "<urn:fact:asic_banned:BD-0042> bg:validFromNotBefore '2025-06-10'^^xsd:date ; "
+        "bg:validFromNotAfter '2025-06-03'^^xsd:date .",
+        "urn:fact:asic_banned:BD-0042"),
+    "valid_from_after_not_after": (
+        "<urn:fact:asic_banned:BD-0042> bg:validFromNotAfter '2025-05-01'^^xsd:date .",
+        "urn:fact:asic_banned:BD-0042"),
+    # --- unresolved counterparty: a name never backs a party-level role
+    "name_only_counterparty_backs_role": (
+        "<urn:fact:asic_liquidator:RL-30471:2> bg:affiliatedWith <urn:abn:38610001119> .",
+        "urn:fact:asic_liquidator:RL-30471:2"),
+    "counterparty_name_and_record": (
+        "<urn:fact:asic_liquidator:RL-30471:2> bg:counterpartyRecord <urn:src:asic_company:610001119> .",
+        "urn:fact:asic_liquidator:RL-30471:2"),
+    # --- infringement notice details and record URL
+    "notice_count_zero": ("<urn:fact:accc:IN-2026-017> bg:noticeCount 0 .", "urn:fact:accc:IN-2026-017"),
+    "source_url_not_anyuri": ("<urn:src:accc:IN-2026-017> bg:sourceUrl 'not typed' .",
+                              "urn:src:accc:IN-2026-017"),
 }
+
+
+def test_unresolved_counterparty_example(examples):
+    f = URIRef("urn:fact:asic_liquidator:RL-30471:2")
+    assert examples.value(f, BG.counterpartyName) is not None
+    assert examples.value(f, BG.affiliatedWith) is None
+
+
+def test_notice_details_in_example(examples):
+    n = URIRef("urn:fact:accc:IN-2026-017")
+    assert len(set(examples.objects(n, BG.infringementNumber))) == 2
+    assert int(examples.value(n, BG.noticeCount)) == 2
+    assert examples.value(n, BG.legislation) is not None
+
+
+def test_bracketed_end_inside_bounds_conforms(examples, schema, shapes):
+    """A stated validTo inside [NotBefore, NotAfter] is fine."""
+    g = _clean(examples)
+    g.add((URIRef("urn:fact:asic_credit:398765"), BG.validTo,
+           Literal("2026-10-09", datatype=URIRef("http://www.w3.org/2001/XMLSchema#date"))))
+    conforms, results = _run(g, schema, shapes)
+    assert conforms, results
+
+
+def test_example_has_bracketed_cancellation(examples):
+    f = URIRef("urn:fact:asic_credit:398765")
+    assert examples.value(f, BG.validTo) is None
+    assert str(examples.value(f, BG.validToNotBefore)) == "2026-10-06"
+    assert str(examples.value(f, BG.validToNotAfter)) == "2026-10-12"
 
 
 @pytest.mark.parametrize("name", sorted(MUTATIONS))
@@ -307,3 +429,18 @@ def test_untyped_party_is_a_warning_only(examples, schema, shapes):
     _, results = _run(g, schema, shapes)
     mine = [r for r in results if str(r["focus"]) == "urn:party:x"]
     assert mine and all(r["severity"] == SH.Warning for r in mine)
+
+
+def test_unknown_lei_registration_status_is_a_warning(examples, schema, shapes):
+    g = _clean(examples)
+    rec = URIRef("urn:src:gleif_l1:9845EXAMPLE000000405")
+    g.remove((rec, BG.leiRegistrationStatus, None))
+    g.add((rec, BG.leiRegistrationStatus, Literal("WITHDRAWN")))
+    _, results = _run(g, schema, shapes)
+    mine = [r for r in results if r["focus"] == rec]
+    assert mine and all(r["severity"] == SH.Warning for r in mine)
+
+
+def test_ownership_percentage_comment_mentions_quantifiers(schema: Graph):
+    comment = str(schema.value(BG.ownershipPercentage, RDFS.comment))
+    assert "ACCOUNTING_CONSOLIDATION" in comment

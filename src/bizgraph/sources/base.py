@@ -74,12 +74,15 @@ class SourceAdapter(ABC):
         """Slice filter hook (e.g. Tier 1 active-status + state). Default keeps everything."""
         return True
 
-    def run(self, path: Path, snapshot_date: date, store: DuckDBStore) -> LoadStats:
+    def run(self, path: Path, snapshot_date: date, store: DuckDBStore, force: bool = False) -> LoadStats:
+        """Load one file. A file whose hash was already ingested is skipped unless `force`
+        (a forced rerun is still idempotent: upsert refreshes derived columns, e.g. after a
+        normaliser change, and inserts only payloads it has not seen)."""
         started = time.perf_counter()
         stats = LoadStats(self.source_id, snapshot_date)
 
         file_hash = store.snapshots.file_hash(path)
-        if store.snapshots.exists(self.source_id, file_hash):
+        if not force and store.snapshots.exists(self.source_id, file_hash):
             stats.skipped_snapshot = True
             stats.wall_clock_s = time.perf_counter() - started
             return stats

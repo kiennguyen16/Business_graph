@@ -354,7 +354,8 @@ class AbrAdapter(SourceAdapter):
         }
 
     def run_parallel(
-        self, path: Path, snapshot_date: date, store: DuckDBStore, workers: int | None = None
+        self, path: Path, snapshot_date: date, store: DuckDBStore, workers: int | None = None,
+        force: bool = False,
     ) -> LoadStats:
         """Same contract as `run()` (snapshot-hash skip, stats, snapshot row), but each XML
         member is parsed and mapped in its own worker process. This process stays the only
@@ -362,12 +363,12 @@ class AbrAdapter(SourceAdapter):
         """
         workers = workers if workers is not None else max(1, (os.cpu_count() or 2) - 2)
         if workers <= 1:
-            return self.run(path, snapshot_date, store)
+            return self.run(path, snapshot_date, store, force=force)
         started = time.perf_counter()
         stats = LoadStats(self.source_id, snapshot_date)
         path = Path(path)
         file_hash = store.snapshots.file_hash(path)
-        if store.snapshots.exists(self.source_id, file_hash):
+        if not force and store.snapshots.exists(self.source_id, file_hash):
             stats.skipped_snapshot = True
             stats.wall_clock_s = time.perf_counter() - started
             return stats
@@ -391,6 +392,37 @@ class AbrAdapter(SourceAdapter):
         store.snapshots.record(self.source_id, snapshot_date, file_hash, path, stats)
         return stats
 
+    @classmethod
+    def shared_acn_abns(cls, path: Path, workers: int | None = None) -> dict[str, list[str]]:
+        """Full-extract scan: every ACN that ABR gives as the OWN ACN (`_owns_acn`) of two or
+        more ABNs, mapped to those ABNs. Adding them to the allowlist puts both sides of each
+        "one ACN on two ABNs" case into the store, so the canonical build can quarantine it
+        even when only one side falls in the state slice."""
+        members = _list_members(Path(path), (".xml",))
+        workers = workers if workers is not None else max(1, (os.cpu_count() or 2) - 2)
+        tasks = [(str(c), m) for c, m in members]
+        first: dict[str, str] = {}
+        shared: dict[str, set[str]] = {}
+        if workers <= 1:
+            results = map(_abr_worker_acn_scan, tasks)
+            for pairs in results:
+                cls._merge_acn_pairs(pairs, first, shared)
+        else:
+            with ProcessPoolExecutor(
+                max_workers=min(workers, max(1, len(members))),
+                mp_context=multiprocessing.get_context("spawn"),
+            ) as pool:
+                for pairs in pool.map(_abr_worker_acn_scan, tasks):
+                    cls._merge_acn_pairs(pairs, first, shared)
+        return {acn: sorted(abns) for acn, abns in sorted(shared.items())}
+
+    @staticmethod
+    def _merge_acn_pairs(pairs: list[tuple[str, str]], first: dict[str, str], shared: dict[str, set[str]]) -> None:
+        for acn, abn in pairs:
+            prev = first.setdefault(acn, abn)
+            if prev != abn:
+                shared.setdefault(acn, {prev}).add(abn)
+
     def to_record(self, row: RawRow, snapshot_date: date) -> SourceRecord:
         if row.get(self.OUTSIDE_SLICE):
             raise RejectRecord("outside_slice")
@@ -413,12 +445,17 @@ class AbrAdapter(SourceAdapter):
 
         identifiers: list[Identifier] = [abn]
         acn = None
+        unverified = None
         if row.get("asic_number"):
             acn = _ACN.parse(row["asic_number"])
+            if acn is not None and not self._owns_acn(entity_type, row.get("entity_type_text"), abn.value, acn.value):
+                # A trust / partnership / individual carrying another body's ACN (e.g. the
+                # corporate trustee's): evidence only, never this party's identifier.
+                unverified, acn = acn.value, None
             if acn is not None:
                 identifiers.append(acn)
 
-        norm = self.names.normalise(name_raw)
+        norm = self.names.normalise_person(name_raw) if is_person else self.names.normalise(name_raw)
         payload: dict[str, Any] = {
             "abn": abn.value,
             "abn_status": row.get("abn_status"),
@@ -436,7 +473,7 @@ class AbrAdapter(SourceAdapter):
             "postcode": row.get("postcode"),
             "asic_number": row.get("asic_number"),
             "asic_number_type": row.get("asic_number_type"),
-            "asic_number_valid": acn is not None,
+            "asic_number_valid": acn is not None or unverified is not None,
             "gst_status": row.get("gst_status"),
             "gst_status_from": _yyyymmdd(row.get("gst_status_from")),
             "dgr": [
@@ -445,6 +482,8 @@ class AbrAdapter(SourceAdapter):
             # Business names (BN), trading names (TRD), other names (OTN), DGR names: alias candidates.
             "other_names": list(row.get("other_names") or []),
         }
+        if unverified is not None:  # only when present, so other records' content hashes are unchanged
+            payload["asic_number_unverified"] = unverified
         return SourceRecord(
             source=self.source_id,
             record_id=abn.value,
@@ -456,6 +495,20 @@ class AbrAdapter(SourceAdapter):
             identifiers=tuple(identifiers),
         )
 
+    COMPANY_ENTITY_TYPES: ClassVar[frozenset[str]] = frozenset({"PRV", "PUB"})
+
+    @classmethod
+    def _owns_acn(cls, entity_type: str | None, entity_text: str | None, abn: str, acn: str) -> bool:
+        """An ABR ASICNumber is this party's own ACN only for a company (PRV, PUB, or a
+        government company: [C|S|L|T]C? codes such as SCR State Government Private Company),
+        or when the ABN is built on it (ABN[2:] == ACN). Never for an individual. Decided on
+        the entity type code; the text is not trusted."""
+        if entity_type in cls.PERSON_ENTITY_TYPES:
+            return False
+        if entity_type in cls.COMPANY_ENTITY_TYPES or re.fullmatch(r"[CSLT]C[A-Z]", entity_type or ""):
+            return True
+        return abn[2:] == acn
+
     def accept(self, record: SourceRecord) -> bool:
         p = record.payload
         if self.in_state_slice(p.get("abn_status"), p.get("state")):
@@ -465,6 +518,30 @@ class AbrAdapter(SourceAdapter):
 
 # Worker side of AbrAdapter.run_parallel (module level so a spawned process can import it).
 _WORKER_ADAPTER: AbrAdapter | None = None
+
+
+def _abr_worker_acn_scan(task: tuple[str, str | None]) -> list[tuple[str, str]]:
+    """(own ACN, ABN) for every ABR element of one member; no row dicts are built."""
+    container, member = task
+    out: list[tuple[str, str]] = []
+    for _name, fh in _open_member(Path(container), member):
+        context = etree.iterparse(fh, events=("end",), tag="ABR", huge_tree=True)
+        for _, el in context:
+            asic = el.findtext("ASICNumber")
+            if asic and asic.strip():
+                abn = _ABN.parse((el.findtext("ABN") or "").strip())
+                acn = _ACN.parse(asic.strip())
+                if abn is not None and acn is not None and AbrAdapter._owns_acn(
+                    (el.findtext("EntityType/EntityTypeInd") or "").strip(), None, abn.value, acn.value
+                ):
+                    out.append((acn.value, abn.value))
+            el.clear(keep_tail=False)
+            parent = el.getparent()
+            if parent is not None:
+                while el.getprevious() is not None:
+                    del parent[0]
+        del context
+    return out
 
 
 def _abr_worker_init(config: dict[str, Any]) -> None:
@@ -514,6 +591,7 @@ class AsicCompanyAdapter(CsvSourceAdapter):
     delimiter: ClassVar[str] = "\t"
 
     DEFAULT_STATUSES: ClassVar[str] = ALL
+    ARBN_TYPES: ClassVar[frozenset[str]] = frozenset({"FNOS", "RACN"})
 
     def __init__(
         self,
@@ -532,16 +610,50 @@ class AsicCompanyAdapter(CsvSourceAdapter):
             for row in reader:
                 yield {(k or "").strip(): (v.strip() if isinstance(v, str) else "") for k, v in row.items()}
 
+    def _split_acns(self, path: Path) -> set[str]:
+        """ACNs whose rows are not contiguous (a cheap first pass over the ACN column only)."""
+        seen: set[str] = set()
+        split: set[str] = set()
+        prev = None
+        for _member, fh in _iter_members(Path(path), (".csv", ".tsv", ".txt")):
+            text = io.TextIOWrapper(fh, encoding=self.encoding, errors="replace", newline="")
+            reader = csv.reader(text, delimiter=self.delimiter)
+            header = [(h or "").strip().lstrip("﻿") for h in next(reader, [])]
+            if "ACN" not in header:
+                continue
+            i = header.index("ACN")
+            for rec in reader:
+                acn = rec[i].strip() if i < len(rec) else ""
+                if acn != prev:
+                    if acn in seen:
+                        split.add(acn)
+                    seen.add(acn)
+                    prev = acn
+        return split
+
     def parse(self, path: Path) -> Iterator[RawRow]:
-        """Group the contiguous per-name rows of one ACN into a single raw row."""
+        """Group the per-name rows of one ACN into a single raw row.
+
+        The register is ACN-contiguous in practice, so groups stream. Grouping does not
+        depend on it: ACNs whose rows are split (found by a first pass) are buffered and
+        emitted, fully grouped, at the end.
+        """
+        split = self._split_acns(path)
+        buffered: dict[str, list[dict[str, str]]] = {}
         group: list[dict[str, str]] = []
         for row in self._rows(path):
-            if group and row.get("ACN") != group[0].get("ACN"):
+            acn = row.get("ACN") or ""
+            if acn in split:
+                buffered.setdefault(acn, []).append(row)
+                continue
+            if group and acn != group[0].get("ACN"):
                 yield self._group(group)
                 group = []
             group.append(row)
         if group:
             yield self._group(group)
+        for rows in buffered.values():
+            yield self._group(rows)
 
     @staticmethod
     def _group(rows: list[dict[str, str]]) -> RawRow:
@@ -585,6 +697,10 @@ class AsicCompanyAdapter(CsvSourceAdapter):
         if not name_raw:
             raise RejectRecord("missing_name")
 
+        # Registered foreign companies (FNOS) and registered Australian bodies (RACN) carry an
+        # ARBN in the ACN column: same check digit, different identifier kind.
+        if (row.get("type") or "").upper() in self.ARBN_TYPES:
+            acn = Identifier(IdScheme.ARBN, acn.value)
         identifiers: list[Identifier] = [acn]
         abn_field = (row.get("abn") or "").strip()
         abn = _ABN.parse(abn_field) if abn_field not in ("", "0") else None

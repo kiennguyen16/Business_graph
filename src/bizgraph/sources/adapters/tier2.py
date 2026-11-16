@@ -42,7 +42,8 @@ GLEIF (golden copy, CC0 1.0)
 ----------------------------
 * ``gleif_l1``  LEI-CDF golden copy CSV (``*-gleif-lei2*.csv``), filtered to
   AU/NZ entities plus out-of-region counterparties referenced by kept
-  relationships. Unfiltered golden copy zips also parse (streamed).
+  relationships, including the transitive chain of consolidation parents
+  (`filter_gleif_golden_copy`). Unfiltered golden copy zips also parse (streamed).
 * ``gleif_l2``  RR-CDF golden copy CSV (``*-gleif-rr*.csv``), relationships
   with at least one AU/NZ end.
 
@@ -922,7 +923,10 @@ class GleifL1Adapter(_GleifCsvAdapter):
             "legal_address": legal,
             "headquarters_address": hq,
             "state": state,
-            "country": (legal or {}).get("country"),
+            # Legal address country first, HQ as fallback; both recorded.
+            "country": (legal or {}).get("country") or (hq or {}).get("country"),
+            "legal_country": (legal or {}).get("country"),
+            "hq_country": (hq or {}).get("country"),
             "legal_jurisdiction": jurisdiction,
             "in_scope": "au_nz" if in_region else "referenced_counterparty",
             "entity_category": category,
@@ -1085,16 +1089,59 @@ class GleifL2Adapter(_GleifCsvAdapter):
 # --------------------------------------------------------------------------- GLEIF slice
 
 
+CONSOLIDATION_TYPES: frozenset[str] = frozenset(
+    {"IS_DIRECTLY_CONSOLIDATED_BY", "IS_ULTIMATELY_CONSOLIDATED_BY"}
+)
+
+
+def consolidation_closure(
+    seeds: set[str], parents_of: dict[str, set[str]], max_depth: int = 10
+) -> tuple[set[str], int, int]:
+    """Breadth-first walk up consolidation edges from `seeds`.
+
+    Returns (ancestors not in `seeds`, deepest level that added a node, nodes still on the
+    frontier when `max_depth` stopped the walk). A `seen` set makes it cycle-safe: a node is
+    expanded at most once, so a cycle in the source data ends the walk instead of looping.
+    """
+    seen = set(seeds)
+    frontier = set(seeds)
+    added: set[str] = set()
+    depth_reached = 0
+    for depth in range(1, max_depth + 1):
+        nxt = {p for c in frontier for p in parents_of.get(c, ())} - seen
+        if not nxt:
+            break
+        seen |= nxt
+        added |= nxt
+        frontier = nxt
+        depth_reached = depth
+    else:
+        # max_depth exhausted: report how many nodes would have been expanded next.
+        nxt = {p for c in frontier for p in parents_of.get(c, ())} - seen
+        return added, depth_reached, len(nxt)
+    return added, depth_reached, 0
+
+
 def filter_gleif_golden_copy(
-    l1_zip: Path, rr_zip: Path, l1_out: Path, rr_out: Path, countries: frozenset[str] = frozenset({"AU", "NZ"})
+    l1_zip: Path,
+    rr_zip: Path,
+    l1_out: Path,
+    rr_out: Path,
+    countries: frozenset[str] = frozenset({"AU", "NZ"}),
+    max_depth: int = 10,
 ) -> dict[str, int]:
     """Cut the GLEIF golden copy down to `countries`, keeping the golden copy columns as-is.
 
-    Pass 1: L1 rows whose legal address, headquarters address or legal jurisdiction
-            is in `countries`.
-    Pass 2: RR rows with at least one end in the pass-1 set.
-    Pass 3: L1 rows for counterparties those relationships reference outside `countries`
-            (foreign parents and foreign children), so every kept edge has both nodes.
+    Pass 1: L1 rows whose legal address, headquarters address or legal jurisdiction is in
+            `countries` (the in-region set).
+    Pass 2: read the RR file once into a child -> parents map of consolidation edges
+            (IS_DIRECTLY_ / IS_ULTIMATELY_CONSOLIDATED_BY) and walk up from the in-region
+            set to the transitive closure of parents, bounded at `max_depth` levels and
+            cycle-safe (`consolidation_closure`). Without this an ownership chain stops at
+            the first foreign parent (Citibank Overseas instead of Citigroup Inc).
+    Pass 3: RR rows kept = any relationship with an in-region end, plus every consolidation
+            edge whose child is in the closure (so foreign links of the chain are present).
+    Pass 4: L1 rows for every out-of-region LEI those kept rows touch.
     Streams both zips; the 5 GB L1 CSV is read twice (about 6 minutes on a laptop).
     """
 
@@ -1127,19 +1174,40 @@ def filter_gleif_golden_copy(
                 w.writerow(row)
         stats.update(l1_rows=n, l1_in_region=len(keep))
 
+    rows = reader(rr_zip)
+    rr_header = next(rows)
+    rix = {h: i for i, h in enumerate(rr_header)}
+    t_ix = rix["Relationship.RelationshipType"]
+    parents_of: dict[str, set[str]] = {}
+    n = 0
+    for row in rows:
+        n += 1
+        if row[t_ix] in CONSOLIDATION_TYPES and row[0] != row[2]:
+            parents_of.setdefault(row[0], set()).add(row[2])
+    ancestors, depth, cut = consolidation_closure(keep, parents_of, max_depth)
+    chain = keep | ancestors
+    stats.update(
+        rr_rows=n,
+        closure_ancestors=len(ancestors),
+        closure_max_depth=depth,
+        closure_truncated_frontier=cut,
+    )
+
     referenced: set[str] = set()
     with rr_out.open("w", encoding="utf-8", newline="") as out:
         w = csv.writer(out, quoting=csv.QUOTE_ALL)
         rows = reader(rr_zip)
         w.writerow(next(rows))
-        n = kept = 0
+        kept = chain_edges = 0
         for row in rows:
-            n += 1
-            if row[0] in keep or row[2] in keep:
+            in_region_edge = row[0] in keep or row[2] in keep
+            chain_edge = row[t_ix] in CONSOLIDATION_TYPES and row[0] in chain
+            if in_region_edge or chain_edge:
                 kept += 1
+                chain_edges += chain_edge and not in_region_edge
                 w.writerow(row)
                 referenced.update(x for x in (row[0], row[2]) if x not in keep)
-        stats.update(rr_rows=n, rr_kept=kept, referenced_outside=len(referenced))
+        stats.update(rr_kept=kept, rr_chain_only_edges=chain_edges, referenced_outside=len(referenced))
 
     with l1_out.open("a", encoding="utf-8", newline="") as out:
         w = csv.writer(out, quoting=csv.QUOTE_ALL)

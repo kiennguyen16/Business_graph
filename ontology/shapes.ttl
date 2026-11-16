@@ -1,10 +1,13 @@
 # =============================================================================
 # bizgraph SHACL shapes: the invariants the model relies on.
 #
-# Validation scope: the union of the source graphs, urn:graph:canonical,
-# urn:graph:ontology (needed for rdfs:subClassOf and rdfs:subPropertyOf) and
-# EXACTLY ONE urn:graph:links:{matcher_version}. Validating two links versions
-# together would legitimately show two attributions per fact.
+# Validation scope: the union of ONE snapshot graph per source (the latest;
+# a record IRI is stable across snapshots, so a union of snapshots would give
+# a record two snapshotDate / contentHash values), the urn:graph:derived:*
+# graphs (e.g. licence_history), urn:graph:canonical, urn:graph:ontology
+# (needed for rdfs:subClassOf and rdfs:subPropertyOf) and EXACTLY ONE
+# urn:graph:links:{matcher_version}. Validating two links versions together
+# would legitimately show two attributions per fact.
 #
 # On violation: the offending records and every party carrying the
 # conflicting value go to the DuckDB quarantine table. Nothing is merged,
@@ -60,6 +63,50 @@ bgsh:ArbnFormatShape a sh:NodeShape ;
         sh:message "ARBN must be 9 digits, normalised." ;
     ] .
 
+bgsh:ArsnFormatShape a sh:NodeShape ;
+    sh:targetSubjectsOf bg:arsn ;
+    sh:property [
+        sh:path bg:arsn ;
+        sh:datatype xsd:string ;
+        sh:pattern "^[0-9]{9}$" ;
+        sh:message "ARSN must be 9 digits, normalised." ;
+    ] .
+
+bgsh:NzbnFormatShape a sh:NodeShape ;
+    sh:targetSubjectsOf bg:nzbn ;
+    sh:property [
+        sh:path bg:nzbn ;
+        sh:datatype xsd:string ;
+        sh:pattern "^94[0-9]{11}$" ;
+        sh:message "NZBN must be 13 digits starting 94." ;
+    ] .
+
+bgsh:NzCompanyNumberFormatShape a sh:NodeShape ;
+    sh:targetSubjectsOf bg:nzCompanyNumber ;
+    sh:property [
+        sh:path bg:nzCompanyNumber ;
+        sh:datatype xsd:string ;
+        sh:pattern "^[1-9][0-9]{0,9}$" ;
+        sh:message "NZ company number must be digits, no leading zero." ;
+    ] .
+
+bgsh:RecordLicenceNumberFormatShape a sh:NodeShape ;
+    sh:targetSubjectsOf bg:afslNumber, bg:aclNumber, bg:liquidatorNumber ;
+    sh:property [ sh:path bg:afslNumber ; sh:datatype xsd:string ; sh:pattern "^[1-9][0-9]{0,8}$" ] ;
+    sh:property [ sh:path bg:aclNumber ; sh:datatype xsd:string ; sh:pattern "^[1-9][0-9]{0,8}$" ] ;
+    sh:property [ sh:path bg:liquidatorNumber ; sh:datatype xsd:string ; sh:pattern "^[1-9][0-9]{0,8}$" ] .
+
+bgsh:LeiRegistrationStatusShape a sh:NodeShape ;
+    sh:targetSubjectsOf bg:leiRegistrationStatus ;
+    sh:property [
+        sh:path bg:leiRegistrationStatus ;
+        sh:maxCount 1 ;
+        sh:severity sh:Warning ;
+        sh:in ( "PENDING_VALIDATION" "ISSUED" "DUPLICATE" "LAPSED" "MERGED" "RETIRED"
+                "ANNULLED" "CANCELLED" "TRANSFERRED" "PENDING_TRANSFER" "PENDING_ARCHIVAL" ) ;
+        sh:message "Unknown GLEIF registration status: vocabulary drift, check the adapter." ;
+    ] .
+
 bgsh:LeiFormatShape a sh:NodeShape ;
     sh:targetSubjectsOf bg:lei ;
     sh:property [
@@ -81,6 +128,10 @@ bgsh:PartyShape a sh:NodeShape ;
                   sh:message "A party carries at most one ACN." ] ;
     sh:property [ sh:path bg:lei ; sh:maxCount 1 ;
                   sh:message "A party carries at most one LEI." ] ;
+    sh:property [ sh:path bg:arsn ; sh:maxCount 1 ] ;
+    sh:property [ sh:path bg:nzbn ; sh:maxCount 1 ] ;
+    sh:property [ sh:path bg:nzCompanyNumber ; sh:maxCount 1 ] ;
+    sh:property [ sh:path bg:arbn ; sh:maxCount 1 ] ;
     sh:property [ sh:path bg:name ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ;
                   sh:message "A canonical party has exactly one current name; other names go in bg:otherName." ] ;
     sh:property [ sh:path prov:wasDerivedFrom ; sh:minCount 1 ; sh:class bg:SourceRecord ;
@@ -112,6 +163,29 @@ bgsh:PartyShape a sh:NodeShape ;
     ] ;
     sh:sparql [
         a sh:SPARQLConstraint ;
+        sh:message "Identifier {?prop} {?value} is also used by {?other}: quarantine both, do not merge." ;
+        sh:prefixes bgsh: ;
+        sh:select """
+            SELECT $this ?prop ?value ?other WHERE {
+                $this ?prop ?value .
+                FILTER (?prop IN (bg:arbn, bg:arsn, bg:nzbn, bg:nzCompanyNumber))
+                ?other ?prop ?value .
+                ?other a/rdfs:subClassOf* bg:Party .
+                FILTER (?other != $this)
+            }""" ;
+    ] ;
+    sh:sparql [
+        a sh:SPARQLConstraint ;
+        sh:message "Party carries ARSN {?value} but is not typed bg:ManagedInvestmentScheme." ;
+        sh:prefixes bgsh: ;
+        sh:select """
+            SELECT $this ?value WHERE {
+                $this bg:arsn ?value .
+                FILTER NOT EXISTS { $this a/rdfs:subClassOf* bg:ManagedInvestmentScheme }
+            }""" ;
+    ] ;
+    sh:sparql [
+        a sh:SPARQLConstraint ;
         sh:message "LEI {?value} is also used by {?other}: quarantine both, do not merge." ;
         sh:prefixes bgsh: ;
         sh:select """
@@ -122,6 +196,11 @@ bgsh:PartyShape a sh:NodeShape ;
                 FILTER (?other != $this)
             }""" ;
     ] .
+
+bgsh:ManagedInvestmentSchemeShape a sh:NodeShape ;
+    sh:targetClass bg:ManagedInvestmentScheme ;
+    sh:property [ sh:path bg:acn ; sh:maxCount 0 ;
+                  sh:message "A managed investment scheme has an ARSN, never an ACN (same checksum, different number space)." ] .
 
 bgsh:PartyTypedShape a sh:NodeShape ;
     sh:targetClass bg:Party ;
@@ -141,6 +220,8 @@ bgsh:SourceRecordShape a sh:NodeShape ;
     sh:property [ sh:path bg:abn ; sh:maxCount 1 ] ;
     sh:property [ sh:path bg:acn ; sh:maxCount 1 ] ;
     sh:property [ sh:path bg:lei ; sh:maxCount 1 ] ;
+    sh:property [ sh:path bg:sourceUrl ; sh:maxCount 1 ; sh:datatype xsd:anyURI ] ;
+    sh:property [ sh:path bg:foreignReference ; sh:datatype xsd:string ] ;
     sh:property [ sh:path bg:partyTypeHint ; sh:maxCount 1 ;
                   sh:in ( "organisation" "person" "unknown" ) ] .
 
@@ -153,7 +234,20 @@ bgsh:FactShape a sh:NodeShape ;
     sh:property [ sh:path bg:validFrom ; sh:maxCount 1 ; sh:datatype xsd:date ;
                   sh:lessThanOrEquals bg:validTo ;
                   sh:message "Fact validFrom must be on or before validTo." ] ;
-    sh:property [ sh:path bg:validTo ; sh:maxCount 1 ; sh:datatype xsd:date ] ;
+    sh:property [ sh:path bg:validFrom ; sh:lessThanOrEquals bg:validFromNotAfter ;
+                  sh:message "validFrom must not be after validFromNotAfter." ] ;
+    sh:property [ sh:path bg:validTo ; sh:maxCount 1 ; sh:datatype xsd:date ;
+                  sh:lessThanOrEquals bg:validToNotAfter ;
+                  sh:message "validTo must not be after validToNotAfter." ] ;
+    # Interval-uncertain bounds: NotBefore <= NotAfter, and a stated date lies inside.
+    sh:property [ sh:path bg:validFromNotBefore ; sh:maxCount 1 ; sh:datatype xsd:date ;
+                  sh:lessThanOrEquals bg:validFromNotAfter, bg:validFrom ;
+                  sh:message "validFromNotBefore must be on or before validFromNotAfter and validFrom." ] ;
+    sh:property [ sh:path bg:validFromNotAfter ; sh:maxCount 1 ; sh:datatype xsd:date ] ;
+    sh:property [ sh:path bg:validToNotBefore ; sh:maxCount 1 ; sh:datatype xsd:date ;
+                  sh:lessThanOrEquals bg:validToNotAfter, bg:validTo ;
+                  sh:message "validToNotBefore must be on or before validToNotAfter and validTo." ] ;
+    sh:property [ sh:path bg:validToNotAfter ; sh:maxCount 1 ; sh:datatype xsd:date ] ;
     sh:property [ sh:path bg:aboutRecord ; sh:minCount 1 ; sh:maxCount 1 ; sh:class bg:SourceRecord ;
                   sh:message "A fact names its subject through exactly one source record." ] ;
     sh:property [ sh:path prov:wasDerivedFrom ; sh:minCount 1 ; sh:class bg:SourceRecord ;
@@ -186,18 +280,36 @@ bgsh:FactShape a sh:NodeShape ;
 
 bgsh:RelationshipShape a sh:NodeShape ;
     sh:targetClass bg:Relationship ;
-    sh:property [ sh:path bg:counterpartyRecord ; sh:minCount 1 ; sh:maxCount 1 ; sh:class bg:SourceRecord ] ;
+    # The counterparty is named by exactly one of: a source record, an ACN, an
+    # LEI, or (unresolved) a bare name. A bare name never backs a role edge:
+    # the backing check below has no name clause, so a role with only a name fails.
+    sh:xone (
+        [ sh:path bg:counterpartyRecord ; sh:minCount 1 ]
+        [ sh:path bg:counterpartyAcn ; sh:minCount 1 ]
+        [ sh:path bg:counterpartyLei ; sh:minCount 1 ]
+        [ sh:path bg:counterpartyName ; sh:minCount 1 ]
+    ) ;
+    sh:message "A relationship names its counterparty by exactly one of bg:counterpartyRecord, bg:counterpartyAcn, bg:counterpartyLei, bg:counterpartyName." ;
+    sh:property [ sh:path bg:counterpartyName ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+    sh:property [ sh:path bg:counterpartyRecord ; sh:maxCount 1 ; sh:class bg:SourceRecord ] ;
+    sh:property [ sh:path bg:counterpartyAcn ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:pattern "^[0-9]{9}$" ] ;
+    sh:property [ sh:path bg:counterpartyLei ; sh:maxCount 1 ; sh:datatype xsd:string ;
+                  sh:pattern "^[A-Z0-9]{18}[0-9]{2}$" ] ;
     sh:property [ sh:path bg:relationshipKind ; sh:minCount 1 ; sh:maxCount 1 ; sh:class bg:RelationshipKind ] ;
     sh:sparql [
         a sh:SPARQLConstraint ;
-        sh:message "Counterparty role {?role} points at {?party} but no bg:Link attributes the counterparty record to that party." ;
+        sh:message "Counterparty role {?role} points at {?party} but neither a bg:Link from the counterparty record nor an identifier equality backs it." ;
         sh:prefixes bgsh: ;
         sh:select """
             SELECT $this ?role ?party WHERE {
                 $this ?role ?party .
                 ?role rdfs:subPropertyOf+ bg:counterparty .
-                $this bg:counterpartyRecord ?rec .
-                FILTER NOT EXISTS { ?l a bg:Link ; bg:sourceRecord ?rec ; bg:party ?party . }
+                FILTER NOT EXISTS {
+                    $this bg:counterpartyRecord ?rec .
+                    ?l a bg:Link ; bg:sourceRecord ?rec ; bg:party ?party .
+                }
+                FILTER NOT EXISTS { $this bg:counterpartyAcn ?acn . ?party bg:acn ?acn . }
+                FILTER NOT EXISTS { $this bg:counterpartyLei ?lei . ?party bg:lei ?lei . }
             }""" ;
     ] .
 
@@ -210,6 +322,14 @@ bgsh:OwnershipShape a sh:NodeShape ;
     sh:property [ sh:path bg:owned ; sh:maxCount 1 ; sh:class bg:Party ] .
     # Cycles are NOT a violation: real ownership data contains them. The
     # traversal bounds depth and keeps a visited set (see NOTES.md).
+
+bgsh:TrusteeshipShape a sh:NodeShape ;
+    sh:targetClass bg:Trusteeship ;
+    sh:property [ sh:path bg:relationshipKind ; sh:hasValue bg:HAS_TRUSTEE ] ;
+    sh:property [ sh:path bg:trust ; sh:maxCount 1 ; sh:class bg:Party ;
+                  sh:disjoint bg:trustee ;
+                  sh:message "A trusteeship has at most one trust, and a trust cannot be its own trustee." ] ;
+    sh:property [ sh:path bg:trustee ; sh:maxCount 1 ; sh:class bg:Party ] .
 
 bgsh:LicenceShape a sh:NodeShape ;
     sh:targetClass bg:Licence ;
@@ -252,6 +372,9 @@ bgsh:BanShape a sh:NodeShape ;
 bgsh:InfringementNoticeShape a sh:NodeShape ;
     sh:targetClass bg:InfringementNotice ;
     sh:property [ sh:path bg:amountAud ; sh:maxCount 1 ; sh:datatype xsd:decimal ; sh:minInclusive 0 ] ;
+    sh:property [ sh:path bg:infringementNumber ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+    sh:property [ sh:path bg:noticeCount ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 1 ] ;
+    sh:property [ sh:path bg:legislation ; sh:datatype xsd:string ] ;
     sh:property [ sh:path bg:regulator ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
     sh:property [ sh:path bg:noticeRecipient ; sh:maxCount 1 ; sh:class bg:Party ] .
 

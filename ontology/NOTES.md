@@ -1,78 +1,71 @@
 # Ontology notes
 
-Files: `schema.ttl` (OWL, namespace `https://w3id.org/bizgraph/ont#`, prefix `bg:`), `shapes.ttl` (SHACL invariants), `examples.ttl` (synthetic data incl. one deliberate violation), tests in `tests/test_ontology.py`.
+`schema.ttl` (OWL, `bg:` = `https://w3id.org/bizgraph/ont#`), `shapes.ttl` (SHACL), `examples.ttl` (synthetic data, one deliberate violation), tests in `tests/test_ontology.py`.
 
-## 1. Five questions, and what each one forced
+## 1. Five questions and the decisions they forced
 
-| # | Question | Schema decision it shaped |
+| # | Question | Decision |
 |---|---|---|
-| Q1 | Ultimate parent of X, following the chain, bounded, cycle-safe | `bg:Ownership` reified with `bg:relationshipKind` (DIRECT vs ULTIMATE consolidation: the traversal follows DIRECT only, ULTIMATE is a cross-check); cycles are legal data, not a constraint |
-| Q2 | Organisations within N hops of a party banned on date D | One `bg:Party` superclass so a `bg:Ban` can hit a person or an organisation; `bg:Relationship` with generic roles `bg:subject` / `bg:counterparty` so a traversal walks any relationship type; `bg:traversalPolicy` marks which edges to expand |
-| Q3 | Did X hold a current AFSL/ACL on D, with which authorisations, and who held licence N then | `bg:Licence` is a *holding period*, not the licence: a transfer is a new holding with the same number and `bg:transferredFrom`; one-holder-at-a-time is a SHACL rule |
-| Q4 | ACCC notice AND financial services licence cancelled in the last 3 months, with confidence | `bg:validFrom`/`bg:validTo` on every fact; `bg:Link` carries `bg:matchType` and `bg:confidence` so the projection can filter by attribution strength |
-| Q5 | ARTG sponsor of P, which party it resolves to, or why not | `bg:SourceRecord` (PROV-O) kept forever; `bg:Abstention` is first-class with reason and best candidate; `bg:matcherVersion` on every decision |
+| Q1 | Ultimate parent of X, bounded, cycle-safe | Reified `bg:Ownership` with `bg:relationshipKind`; traversal follows DIRECT consolidation only, ULTIMATE is a cross-check; cycles are legal data |
+| Q2 | Organisations within N hops of a party banned on date D | One `bg:Party` superclass (a ban hits a person or an organisation); `bg:Relationship` with generic roles `bg:subject` / `bg:counterparty` so traversal walks any relationship type |
+| Q3 | Did X hold an AFSL/ACL on D; who held licence N then | `bg:Licence` is a holding period; a transfer is a new holding with `bg:transferredFrom`; one holder per number at any instant |
+| Q4 | ACCC notice AND licence cancelled in the last 3 months, with confidence | Validity bounds on every fact; `bg:Link` carries match type and confidence |
+| Q5 | ARTG sponsor of P, its party, or why not | `bg:SourceRecord` kept forever; first-class `bg:Abstention`; `bg:matcherVersion` on every decision |
 
 ## 2. Reified vs property
 
-- **Reified (n-ary nodes):** Licence holding, Ban, Ownership, Affiliation, InfringementNotice, ProductSponsorship (all `bg:Fact`, the two-party ones `bg:Relationship`), and the resolution decisions `bg:Link` / `bg:Abstention`. Each has its own attributes, a validity interval, or provenance of its own.
-- **Left as literal properties:** identifiers, name, status, state, postcode, ANZSIC, entity type, licence authorisation text, ban type, ARTG product name, regulator code, evidence JSON, matcher version.
-- **Facts point at records, not parties.** In the source graph a fact says `bg:aboutRecord <urn:src:...>`. The party-level role (`bg:licensee`, `bg:bannedParty`, `bg:owner`, ...) is a shortcut written into `urn:graph:links:{version}` and derived from the `bg:Link`. Changing a threshold therefore rewrites attributions by swapping one named graph; facts are never edited. A SHACL rule rejects any role edge not backed by a link.
-- **Identifiers are literals, not nodes.** A unique identifier node has degree 1 and adds only triples. The canonical IRI is minted from the strongest one (`urn:abn:`, else `urn:acn:`, else `urn:lei:`, else `urn:party:`), so the identifier already is the node. Licence numbers are not party identifiers (they transfer), so they live on `bg:Licence`.
+- **Reified:** Licence holding, Ban, Ownership, Affiliation, Trusteeship, InfringementNotice, ProductSponsorship (all `bg:Fact`; two-party ones `bg:Relationship`), plus `bg:Link` / `bg:Abstention`. Each has attributes, a validity interval or its own provenance.
+- **Literals:** identifiers, names, status, state, postcode, ANZSIC, legal form, jurisdiction, authorisation text, ban type, product name, regulator, notice numbers and legislation, evidence JSON, matcher version. Records carry `bg:sourceUrl` and `bg:foreignReference` (evidence only, never a match key).
+- **Graph layout:** one published snapshot graph per source (latest only: record IRIs are stable, so a union would give a record two `bg:snapshotDate` values), `urn:graph:derived:*` for facts inferred across snapshots (e.g. `licence_history`: ended licences as `urn:fact:{source}:{record_id}:ended:{event_date}` with NotBefore/NotAfter bounds), `urn:graph:canonical`, `urn:graph:links:{version}`, `urn:graph:ontology`.
+- **Facts point at records, not parties.** In a source graph a fact has `bg:aboutRecord <urn:src:...>`. Party roles (`bg:licensee`, `bg:bannedParty`, `bg:owner`, `bg:trustee`, ...) are shortcuts written to `urn:graph:links:{version}`, derived from links. Re-thresholding swaps one named graph; facts are never edited. SHACL rejects a role edge not backed by a link (or, for a counterparty named only by ACN/LEI, by identifier equality).
+- **Unresolved counterparty.** A relationship may name its counterparty only by `bg:counterpartyName` (500 of 660 liquidators name their firm this way). The fact is kept, but a name never backs a party role: `bg:affiliatedWith` is written only once the firm resolves through a link. This is the abstention principle applied to relationships.
+- **Identifiers are literals, not nodes:** a unique identifier node has degree 1 and adds only triples; the party IRI is minted from the strongest identifier. Party identifiers (`bg:abn`, `acn`, `arbn`, `arsn`, `nzbn`, `nzCompanyNumber`, `lei`) live on `bg:PartyOrRecord`: the record holds what the source asserted, the party what the canonical build chose. Licence and liquidator numbers (`bg:afslNumber`, `aclNumber`, `liquidatorNumber`) are **record-only**: they move between holders. Descriptive attributes share the `bg:PartyOrRecord` domain; `bg:leiRegistrationStatus` is kept apart from entity status (a DUPLICATE or ANNULLED LEI never supports `EXACT_LEI`).
+- **`bg:relationshipStatus`** is the source's status as of the snapshot (GLEIF ACTIVE/INACTIVE), not validity time.
 
 ## 3. One party type or two
 
-One superclass `bg:Party`, two disjoint subclasses `bg:Organisation` and `bg:Person`. Bans, links and licences range over `bg:Party` because both kinds are banned, licensed and named in name-only sources. A sole trader holds an ABN, so identifiers attach to `bg:Party`, not `bg:Organisation`.
+One `bg:Party`, two disjoint subclasses `bg:Organisation` and `bg:Person`. Bans, links and licences range over `bg:Party`; a sole trader is a Person with an ABN. "Unknown type" exists only on a **record** (`bg:partyTypeHint`); the pipeline never mints an untyped party (SHACL warning). Resolution consequences: person-to-organisation links are refused (`PARTY_TYPE_CONFLICT`); unknown-type records get the strictest threshold; same-name people are never merged on name alone. `bg:ManagedInvestmentScheme` (ARSN) subclasses `bg:Organisation` rather than adding a third type, so queries over organisations stay correct while the matcher refuses ARSN-to-ACN matches (same checksum, different number space).
 
-"Unknown type" is a property of a **record** (`bg:partyTypeHint "unknown"`), never of a canonical party: the pipeline does not mint a party it cannot type (a node typed only `bg:Party` is a SHACL warning). Consequences for resolution: a person record can never link to an organisation (abstain, `PARTY_TYPE_CONFLICT`); unknown-type records get the strictest threshold; person matching never uses the organisation semantic path (two people with the same name are not evidence of identity).
+## 4. Uniqueness constraints and invariants
 
-## 4. Uniqueness constraints and invariants (shapes.ttl)
+- Formats: ABN 11 digits, ACN/ARBN/ARSN 9, NZBN `94` + 11, LEI 18 alphanumerics + 2 digits, licence numbers without leading zeros. Checksums run at ingest; SHACL is the second fence.
+- At most one value per identifier scheme per party; each identifier value on at most one party (`sh:sparql`). An ARSN implies `bg:ManagedInvestmentScheme`, which never has an ACN.
+- Every fact: exactly one `bg:aboutRecord`, at least one `prov:wasDerivedFrom`, at most one subject party per links version, `validFrom <= validTo`, and every bound ordered (`NotBefore <= NotAfter`, a stated date inside its bounds).
+- A relationship names its counterparty by exactly one of record, ACN, LEI or name. Ownership percentage in [0, 100]. One licence holder at a time.
+- A link: exactly one source record, party and match type, confidence in [0, 1]. One decision per record per matcher version. A ban has exactly one party record and at most one attributed party (zero = abstained, which is allowed).
 
-- ABN `^[1-9][0-9]{10}$`, ACN/ARBN `^[0-9]{9}$`, LEI `^[A-Z0-9]{18}[0-9]{2}$`; checksums are enforced at ingest in Python, so SHACL is the second fence.
-- A party has at most one ABN, ACN, LEI and exactly one current name; an ABN, ACN or LEI value belongs to at most one party (`sh:sparql`).
-- Every fact has exactly one `bg:aboutRecord`, `validFrom <= validTo`, at least one `prov:wasDerivedFrom`, at most one subject party per links version.
-- Ownership percentage in [0, 100]. A licence number has one holder at any instant.
-- A link has exactly one source record, one party, one match type from the scheme, confidence in [0, 1], evidence and matcher version. One decision per record per matcher version.
-- A ban references exactly one party record; its party attribution is at most one (zero means the matcher abstained, which is allowed: a wrong link is worse than none).
-
-**On violation: quarantine, never merge.** The records and all parties carrying the conflicting value go to the DuckDB `quarantine` table; the parties stay separate; any candidate whose match rests on a quarantined identifier is refused with `QUARANTINED_TARGET`. `examples.ttl` contains this case (ACN 610005555 under two names) and the test asserts both parties are reported. OWL keys (`owl:hasKey`, inverse-functional properties) are deliberately absent: OWL's answer to a duplicate key is to infer `owl:sameAs`, which is a silent, irreversible merge.
+**On violation: quarantine, never merge.** Records and parties carrying the conflicting value go to the DuckDB `quarantine` table, parties stay separate, and the matcher abstains with `QUARANTINED_TARGET`. `examples.ttl` holds ACN 610005555 under two names; both parties are reported. No `owl:hasKey` or inverse-functional properties: OWL resolves a duplicate key by inferring `owl:sameAs`, a silent merge.
 
 ## 5. High-degree nodes at 15M companies
 
-| Would-be node | Degree at 15M | Mitigation |
-|---|---|---|
-| State (NSW) | ~5M | literal `bg:state` |
-| Status (Active) | ~10M | literal `bg:registrationStatus` |
-| ANZSIC class, postcode | up to ~1M, ~100k | literals; label lists as SKOS joined by `skos:notation`, no edges |
-| Source / snapshot / matcher run | 1M to 15M | literal `bg:sourceId`, `bg:matcherVersion`; snapshot = named graph |
-| Regulator (ACCC, ASIC) | every notice | literal `bg:regulator` |
-| Match type, licence kind, relationship kind | millions of links | kept as SKOS concepts (they need definitions) but `bg:traversalPolicy "filter-only"`: used as filter constants, never expanded; no inverse properties declared |
-| Large groups (one parent, thousands of subsidiaries) | real, unavoidable | traversal caps in the service layer, ranked by recency and fact type |
+State (~5M per value), status (~10M), country, ANZSIC, postcode, legal form, source, snapshot, matcher run and regulator are **literals**: as nodes, any expansion through them returns a large share of the graph. Code lists join as SKOS by `skos:notation`, with no instance edges. Match type, licence kind and relationship kind stay SKOS concepts (they need definitions) but are marked `bg:traversalPolicy "filter-only"` and have no inverse properties. Large corporate groups are real hubs; the service layer caps traversals.
 
 ## 6. Extension points
 
-- **New relationship type:** subclass `bg:Relationship`, add one role subproperty of `bg:subject` and one of `bg:counterparty`, add a `bg:RelationshipKind` concept, add a shape. Generic traversals read role properties from `urn:graph:ontology`; no existing class, data or graph changes. `bg:Affiliation` was added exactly this way.
-- **New single-party fact:** subclass `bg:Fact` with a role subproperty of `bg:subject`.
-- **New entity type:** subclass `bg:Party` (or `bg:Organisation`); existing links untouched.
-- **New source:** new named graph `urn:graph:source:{source}:{date}`; nothing in the schema changes unless it carries a new fact type.
-- **New match type / abstain reason:** a SKOS concept plus the `sh:in` list in `shapes.ttl`.
+- **New relationship type:** subclass `bg:Relationship`, one role subproperty each of `bg:subject` and `bg:counterparty`, one `bg:RelationshipKind`, one shape. Traversals read roles from `urn:graph:ontology`; nothing else changes. `bg:Affiliation` and `bg:Trusteeship` (`bg:trust`, `bg:trustee`, `HAS_TRUSTEE`) were added this way.
+- **New fact / entity type:** subclass `bg:Fact` / `bg:Party`. **New source:** a named graph. **New match type:** a concept plus the `sh:in` list.
 
-## 7. What was taken and rejected
+## 7. Taken and rejected
 
-- **schema.org:** `bg:Organisation subClassOf schema:Organization`, `bg:Person subClassOf schema:Person`, `bg:name subPropertyOf schema:name`, `bg:lei subPropertyOf schema:leiCode`. Rejected `schema:parentOrganization` / `subOrganization` as the ownership edge: no percentage, no validity, no provenance.
-- **W3C Org:** `bg:Organisation subClassOf org:FormalOrganization` (every canonical organisation comes from a register). `bg:Affiliation` closeMatch `org:Membership` (same n-ary idea). Rejected `org:subOrganizationOf` and `org:hasSubOrganization` for the same reason as schema.org.
-- **FIBO / OMG Commons:** `bg:Organisation` closeMatch `cmns-org:LegalEntity`, `bg:Licence` closeMatch `fibo-be-le-lp:BusinessLicense` (IRIs checked against the published files). Rejected `subClassOf cmns-org:LegalPerson`: ABR trusts and partnerships are not legal persons. Rejected FIBO's party-in-role model as the party class; rejected `LegallyCompetentNaturalPerson` (we cannot assert competence about a banned person). Not imported: FIBO's axioms (e.g. exactly one jurisdiction of incorporation) would be false for parts of our data.
-- **GLEIF:** `bg:Organisation` closeMatch `gleif-L1:LegalEntity`; `bg:Ownership` closeMatch `gleif-base:LegalEntityRelationship`; `bg:owner`/`bg:owned` closeMatch `gleif-L2:hasParent`/`hasChild`; relationship kinds closeMatch `gleif-L2:DirectConsolidation`, `UltimateConsolidation`, `InternationalBranchRelationship`. Taken: the DIRECT vs ULTIMATE distinction. Rejected: modelling the L2 record itself as our ownership node (it is a source record; our `bg:Ownership` is derived from it). `gleif-L1:LEI` is referenced as `skos:closeMatch` / `rdfs:seeAlso` only; whether it is a class or a property in the published L1 file is still to verify.
-- **PROV-O:** `bg:SourceRecord`, `bg:Fact`, `bg:Link` are `prov:Entity`; `prov:wasDerivedFrom` from facts and parties to records; `bg:Party subClassOf prov:Agent`.
-- **owl:equivalentClass** is used nowhere against an external vocabulary: equivalence would pull their axioms onto our data in both directions.
+- **schema.org / W3C Org:** Organisation and Person subclass `schema:Organization`, `org:FormalOrganization` (all from registers) / `schema:Person`; `bg:lei` subproperty of `schema:leiCode`; `bg:Affiliation` closeMatch `org:Membership`. Rejected `schema:parentOrganization` and `org:subOrganizationOf` for ownership (no percentage, validity or provenance).
+- **FIBO / OMG Commons:** closeMatch `cmns-org:LegalEntity`; `bg:Licence` closeMatch `fibo-be-le-lp:BusinessLicense`. Rejected subclassing `LegalPerson` (ABR trusts are not legal persons) and FIBO's party-in-role model. Not imported: some FIBO axioms (exactly one jurisdiction) are false for our data.
+- **GLEIF:** closeMatch `gleif-L1:LegalEntity`, `gleif-base:LegalEntityRelationship`, `gleif-L2:hasParent` / `hasChild` and the consolidation classes. Taken: DIRECT vs ULTIMATE. Rejected: the L2 record as our ownership node (it is a source record). Whether `gleif-L1:LEI` is a class or a property is still to verify.
+- **PROV-O:** records, facts and links are `prov:Entity`; `prov:wasDerivedFrom` declared and reused. `owl:equivalentClass` is never used against external terms.
 
-## 8. Match type vocabulary (`bg:MatchTypeScheme`)
+## 8. Match types
 
-Exact path: `EXACT_ABN`, `EXACT_ACN`, `EXACT_LEI`, `EXACT_LICENCE_NO` (interval-aware), `NAME_NORMALISED_EXACT` (only when exactly one compatible party has that normalised name). Semantic path: `NAME_FUZZY`, `NAME_SEMANTIC`, `WIKIDATA_ALIAS`. Each concept has a `skos:broader` path and a `bg:precedence`. Arbitration: an identifier match always wins; a semantic match never overrides a conflicting identifier (abstain, `IDENTIFIER_CONFLICT`). Abstain reasons: `NO_CANDIDATE`, `BELOW_THRESHOLD`, `AMBIGUOUS`, `IDENTIFIER_CONFLICT`, `PARTY_TYPE_CONFLICT`, `QUARANTINED_TARGET`.
+Exact path: `EXACT_ABN`, `EXACT_ACN`, `EXACT_LEI`, `EXACT_LICENCE_NO`, `NAME_NORMALISED_EXACT` (one compatible party only). Semantic path: `NAME_FUZZY`, `NAME_SEMANTIC`, `WIKIDATA_ALIAS`. An identifier match always wins; a semantic match never overrides a conflicting identifier (`IDENTIFIER_CONFLICT`). Abstain reasons: `NO_CANDIDATE`, `BELOW_THRESHOLD`, `AMBIGUOUS`, `IDENTIFIER_CONFLICT`, `PARTY_TYPE_CONFLICT`, `QUARANTINED_TARGET`.
 
 ## 9. Source records are never deleted
 
-A resolved record stays in its snapshot graph and in DuckDB, unchanged. Parties, role shortcuts and links are derived views (canonical graph, one links graph per matcher version). This is safe because nothing downstream owns data the records do not hold: undoing a merge, recalibrating a threshold or dropping a bad matcher version means re-deriving or deleting a *links graph*, never repairing parties. The cost is storage (one copy per changed record per snapshot, deduplicated by content hash), which is the price of being able to change our mind.
+Parties, roles and links are derived views: undoing a merge or recalibrating means re-deriving a links graph, never repairing parties. Cost: storage, deduplicated by content hash.
 
 ## 10. Time
 
-Validity time: `bg:validFrom`/`bg:validTo` on every fact (closed interval, open when absent; events such as notices have equal dates). Load time: the snapshot date of the named graph. "What was true on D" is a filter on the facts; "what did we believe on D" is a choice of snapshot and links graphs. Not yet modelled with dates: name history and registration status history of a party (they are visible across snapshot graphs; a `bg:Naming` fact is the extension).
+- Validity time is `bg:validFrom` / `bg:validTo`; load time is the snapshot graph's date.
+- A change seen only between weekly snapshots gets **bounds**: `bg:validToNotBefore` (last snapshot showing it), `bg:validToNotAfter` (day before the first without it), and the same pair for the start. A single `validTo` would claim precision we lack and answer "valid on D?" wrongly for up to a week; with bounds the answer is yes, no or unknown.
+- Name and status history live in DuckDB snapshots, not yet as dated facts (`bg:Naming` is the extension).
+
+## 11. IRIs
+
+IRI segments are percent-encoded (non-unreserved characters become `%XX`), e.g. `urn:src:gleif_l2:A%7CIS_DIRECTLY_CONSOLIDATED_BY%7CB`; `bg:recordId` keeps the raw id. Party IRI precedence is `urn:abn:`, `urn:acn:`, `urn:lei:`, else minted `urn:party:`. A party later given an ABN changes IRI, so IRIs are re-derived per build. `bg:ownershipPercentage` comes from GLEIF ACCOUNTING_CONSOLIDATION quantifiers when present, and from shareholding sources.

@@ -1,7 +1,7 @@
 """Independent audit of the Tier 1 adapters (ABR bulk extract, ASIC company register)
 against the REAL raw files.
 
-Run:  .venv/Scripts/python tests/independent/audit_tier1.py [--abr-n 300000] [--asic-full]
+Run:  .venv/Scripts/python tests/independent/audit_tier1.py [--abr-n 300000] [--asic-full] [--full-abr-scan]
 
 Written by an independent tester from Requirement.md, ARCHITECTURE.md 2.1, the ABR
 XSD (data/raw/abr/bulkextract.xsd) and the raw data. Ground truth is computed here
@@ -622,11 +622,72 @@ def section_names(con) -> None:
         print(f"  {a!r} vs {b!r}: {nn.normalise(a).norm!r} / {nn.normalise(b).norm!r}")
 
 
+# ----------------------------------------------------------------- F. full-population scan (all 20 members)
+def section_full_scan(con) -> None:
+    """Regex scan of all ~20.66M ABR records (about 5 min): IND/LegalEntity consistency,
+    replaced flag, ASICNumber kinds, and every ACN that is not ABN[2:] or sits on a non-company
+    type, joined to the ASIC register."""
+    import re
+
+    hdr("F. ABR full-population scan (all 20 members) + ASIC join")
+    rx_head = re.compile(rb'replaced="(\w)"><ABN status="(\w+)" ABNStatusFromDate="\d+">(\d+)</ABN><EntityType><EntityTypeInd>(\w+)<')
+    rx_name = re.compile(rb"<NonIndividualNameText>([^<]*)<")
+    rx_state = re.compile(rb"<State>([^<]*)</State>")
+    rx_asic = re.compile(rb'<ASICNumber ASICNumberType="[^"]*"(?: />|>([^<]*)</ASICNumber>)')
+    c: Counter = Counter()
+    rows = []
+    for z in ABR_ZIPS:
+        with zipfile.ZipFile(z) as zf:
+            for name in sorted(zf.namelist()):
+                for line in zf.open(name):
+                    if b"<ABR " not in line:
+                        continue
+                    m = rx_head.search(line)
+                    rep, st, abn, et = (x.decode() for x in m.groups())
+                    legal = b"<LegalEntity>" in line
+                    c["records"] += 1
+                    c[f"replaced={rep}"] += 1
+                    c[f"IND={et == 'IND'} LegalEntity={legal}"] += 1
+                    a = rx_asic.search(line)
+                    if not a:
+                        continue
+                    v = (a.group(1) or b"").decode().strip()
+                    if legal:
+                        c["IND with ASICNumber"] += 1
+                    if v and set(v) == {"0"}:
+                        c["ASICNumber all zeros"] += 1
+                        print("  all-zero ASICNumber:", abn, et, st)
+                    if acn_ok(v) and (v != abn[2:] or et not in ("PRV", "PUB")) and not legal:
+                        nm = rx_name.search(line)
+                        stt = rx_state.search(line)
+                        rows.append((abn, v, et, nm.group(1).decode("utf-8", "replace") if nm else None, st,
+                                     stt.group(1).decode() if stt else None))
+    for k, v in sorted(c.items()):
+        print(f"  {k}: {v:,}")
+    con.execute("create or replace temp table r(abn varchar, acn varchar, et varchar, name varchar, st varchar, state varchar)")
+    con.executemany("insert into r values (?,?,?,?,?,?)", rows)
+    res = con.execute("""select case when r.et in ('PRV','PUB') then 'company' else 'non-company' end g,
+          r.acn = substr(r.abn,3) acn_is_abn_tail,
+          case when y.ACN is null then 'ACN not in ASIC' when y.ABN=r.abn then 'ASIC same ABN'
+               when y.ABN='0' then 'ASIC ABN 0' else 'ASIC DIFFERENT ABN' end k,
+          count(*) n, count(*) filter (where st='ACT') n_act,
+          count(*) filter (where st='ACT' and state in ('WA','TAS')) n_slice
+        from r left join y on y.ACN=r.acn group by all order by 1,2,3""").fetchall()
+    print("  (group, ACN==ABN[2:], ASIC verdict, n, n ACT, n ACT in WA/TAS):")
+    for row in res:
+        print("   ", row)
+    print("  ASIC DIFFERENT ABN examples:")
+    for row in con.execute("""select r.abn, r.acn, r.et, r.name, r.st, r.state, y.ABN, trim(y."Company Name")
+                              from r join y on y.ACN=r.acn where y.ABN<>'0' and y.ABN<>r.abn limit 20""").fetchall():
+        print("   ", row)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--abr-n", type=int, default=300_000)
     ap.add_argument("--asic-full", action="store_true")
     ap.add_argument("--skip-abr", action="store_true")
+    ap.add_argument("--full-abr-scan", action="store_true", help="section F, ~5 min")
     args = ap.parse_args()
     t = time.time()
     con = asic_con()
@@ -638,6 +699,8 @@ def main() -> None:
     section_asic_adapter(con, args.asic_full)
     section_stability()
     section_names(con)
+    if args.full_abr_scan:
+        section_full_scan(con)
     print(f"\nTotal {time.time() - t:.0f}s")
 
 

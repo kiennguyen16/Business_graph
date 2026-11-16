@@ -56,8 +56,8 @@ class AcnValidator(IdentifierValidator):
         return _NON_DIGIT.sub("", raw)
 
     def is_valid(self, value: str) -> bool:
-        if len(value) != 9 or not value.isdigit():
-            return False
+        if len(value) != 9 or not value.isdigit() or value == "000000000":
+            return False  # all-zero passes the check digit but is a placeholder
         total = sum(int(c) * w for c, w in zip(value[:8], self._weights))
         return (10 - total % 10) % 10 == int(value[8])
 
@@ -66,6 +66,18 @@ class AcnValidator(IdentifierValidator):
         """For companies, the last 9 digits of the ABN are the ACN. Only trust this if it validates."""
         candidate = abn[2:] if len(abn) == 11 else ""
         return candidate if AcnValidator().is_valid(candidate) else None
+
+
+class ArbnValidator(AcnValidator):
+    """ARBN (registered foreign body): same 9-digit check as an ACN, different number space."""
+
+    scheme = IdScheme.ARBN
+
+
+class ArsnValidator(AcnValidator):
+    """ARSN (registered managed investment scheme): ACN check digit, never an ACN."""
+
+    scheme = IdScheme.ARSN
 
 
 class LeiValidator(IdentifierValidator):
@@ -99,8 +111,8 @@ class LicenceNumberValidator(IdentifierValidator):
 _VALIDATORS: dict[IdScheme, IdentifierValidator] = {
     IdScheme.ABN: AbnValidator(),
     IdScheme.ACN: AcnValidator(),
-    IdScheme.ARBN: AcnValidator(),
-    IdScheme.ARSN: AcnValidator(),
+    IdScheme.ARBN: ArbnValidator(),
+    IdScheme.ARSN: ArsnValidator(),
     IdScheme.LEI: LeiValidator(),
     IdScheme.AFSL: LicenceNumberValidator(IdScheme.AFSL),
     IdScheme.ACL: LicenceNumberValidator(IdScheme.ACL),

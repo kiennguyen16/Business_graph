@@ -8,4 +8,9 @@ try:  # Tier 2 adapters are developed separately; tolerate their absence.
 except ImportError:  # pragma: no cover
     tier2 = None
 
+try:  # Tier 3 (ACCC infringement notices); tolerate its absence.
+    from bizgraph.sources.adapters import tier3  # noqa: F401
+except ImportError:  # pragma: no cover
+    tier3 = None
+
 __all__ = ["AbrAdapter", "AsicCompanyAdapter"]

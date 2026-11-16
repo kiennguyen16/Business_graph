@@ -19,8 +19,8 @@ records.
 | `asic_liquidator` (liquidator_202611.csv) | 660 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | LIQUIDATOR_NO 660 (100%) | 660 (100%) | 660 | 0 | 0 |
 | `gleif_l1`, AU entities | 54,082 | 0 | 14,163 (26.2%) | 34,132 (63.1%) | 34,132 (63.1%) | 48,295 (89.3%) | 26 | 54,082 (100%) | ARSN 2,585 (4.8%) | 0 | 200 | 53,870 | 12 |
 | `gleif_l1`, NZ entities | 4,281 | 0 | 0 | 0 | 0 | 0 | 0 | 4,281 (100%) | NZBN 1,026 (24.0%); NZ company no. 1,319 (30.8%) | 0 | 0 | 4,279 | 2 |
-| `gleif_l1`, out-of-region counterparties | 1,243 | 0 | 0 | 0 | 0 | 0 | 0 | 1,243 (100%) | none | 0 | 0 | 1,243 | 0 |
-| `gleif_l2` (AU/NZ filtered RR) | 8,065 | 129 | n/a | n/a | n/a | n/a | n/a | both ends valid on 7,936 (100% of accepted) | n/a | n/a | n/a | n/a | 7,936 (edges) |
+| `gleif_l1`, out-of-region counterparties and parent chain | 1,296 | 0 | 0 | 0 | 0 | 0 | 0 | 1,296 (100%) | none | 0 | 0 | 1,296 | 0 |
+| `gleif_l2` (AU/NZ edges plus parent chain) | 8,435 | 129 | n/a | n/a | n/a | n/a | n/a | both ends valid on 8,306 (100% of accepted) | n/a | n/a | n/a | n/a | 8,306 (edges) |
 
 "ABN or ACN" is the number the brief asks for: the share of records the exact path can attach to the
 Tier 1 backbone without any name matching. "No business key" means no ABN, ACN, ARBN, ARSN, LEI,
@@ -43,7 +43,9 @@ NZBN or NZ company number (licence and liquidator numbers do not join to Tier 1)
 | NZ numbers | payload only | `NZBN` 1,033 (all pass the GS1 check), `NZ_COMPANY_NO` 1,327 |
 | GLEIF SOLE_PROPRIETOR typing | 212 PERSON | 200 PERSON ('LAST, GIVEN' shape), 14 UNKNOWN ('Mega Clicks', bare 'GIVEN LAST'), 15 ORGANISATION |
 | GLEIF `lei_status` | absent | on all 59,606 (ISSUED 31,765, LAPSED 23,748, RETIRED 3,948, DUPLICATE 130, ANNULLED 9, other 6) |
-| GLEIF L2 `child_lei` / `parent_lei` | on all 7,936 edges | on the 4,420 consolidation edges only; the 3,516 IS_FUND-MANAGED_BY / IS_SUBFUND_OF / IS_INTERNATIONAL_BRANCH_OF / IS_FEEDER_TO edges carry `start_lei` / `end_lei` only |
+| GLEIF L2 `child_lei` / `parent_lei` | on all 7,936 edges | on the 4,790 consolidation edges only; the 3,516 IS_FUND-MANAGED_BY / IS_SUBFUND_OF / IS_INTERNATIONAL_BRANCH_OF / IS_FEEDER_TO edges carry `start_lei` / `end_lei` only |
+| GLEIF slice: foreign parent chain (2026-11-17) | stopped at the first foreign parent: 1,243 counterparty LEIs, 7,936 edges, longest direct-parent chain from an AU/NZ entity 3 hops | transitive closure of consolidation parents (depth bound 10, cycle-safe): 1,296 counterparty LEIs (+53), 8,306 edges (+370 consolidation edges between foreign ancestors), longest chain 6 hops (CSCAL NOMINEES PTY LIMITED to CITIGROUP INC.). Previous files kept as `*.csv.v1` |
+| GLEIF `country` | legal address country | legal address country, HQ country as fallback; both also recorded as `legal_country` / `hq_country` |
 
 Checked against the ASIC company register (`company_202611.zip`):
 * AFSL ACNs: 5,476 Pty, 882 public, 16 foreign. Those 16 are foreign companies whose names show no
@@ -108,8 +110,12 @@ checksum-valid number even when it is not trusted, so ids stay stable if guard r
 `IdScheme.LIQUIDATOR_NO`. No ABN, ACN or LEI. 500 name a firm (`LIQ_FIRM`, name-only).
 
 **GLEIF Level 1.** Slice: legal address, headquarters address or legal jurisdiction in AU or NZ
-(58,363 of 3,494,799 golden copy records), plus 1,243 out-of-region LEIs referenced by kept
-relationships.
+(58,363 of 3,494,799 golden copy records), plus 1,296 out-of-region LEIs: every counterparty of a
+kept relationship, including the full chain of consolidation parents above each AU/NZ entity.
+`country` is the legal address country (HQ country as fallback); both are also in the payload.
+A foreign `country` can be correct for a familiar name: LEI 254900ISXDIMUVJZVJ49 'EQT Holdings
+Limited' is a Gibraltar company (legal address, HQ and jurisdiction all GI), not Australia's
+EQT Holdings Limited, which has no LEI in this slice.
 
 | Registration authority | Meaning | Emitted |
 |---|---|---|
@@ -121,8 +127,13 @@ relationships.
 | RA000016 | ORIC | payload `oric_icn` 83 |
 | RA999999 / RA888888 / foreign registers | none / not applicable / abroad | nothing |
 
-**GLEIF Level 2.** 8,065 relationship records touch an AU/NZ entity; 129 are rejected as
+**GLEIF Level 2.** 8,065 relationship records touch an AU/NZ entity, and 370 more are consolidation
+edges higher up the parent chains of AU/NZ entities (8,435 in total); 129 are rejected as
 `self_relationship` (funds listed as managed by themselves). Accepted, by type:
-IS_FUND-MANAGED_BY 3,241; IS_ULTIMATELY_CONSOLIDATED_BY 2,362; IS_DIRECTLY_CONSOLIDATED_BY 2,058;
-IS_SUBFUND_OF 229; IS_INTERNATIONAL_BRANCH_OF 39; IS_FEEDER_TO 7. Only the 4,420 consolidation edges
-carry `child_lei` / `parent_lei`. 1,816 AU/NZ entities have a direct accounting-consolidation parent.
+IS_FUND-MANAGED_BY 3,241; IS_ULTIMATELY_CONSOLIDATED_BY 2,554; IS_DIRECTLY_CONSOLIDATED_BY 2,236;
+IS_SUBFUND_OF 229; IS_INTERNATIONAL_BRANCH_OF 39; IS_FEEDER_TO 7. Only the 4,790 consolidation edges
+carry `child_lei` / `parent_lei`. 1,816 AU/NZ entities have a direct accounting-consolidation parent;
+following direct-parent edges from them, chains run 1 hop (1,448), 2 (270), 3 (68), 4 (16), 5 (12)
+and 6 (2), and every parent on those chains has its L1 record in the slice. The slice walk
+(`consolidation_closure`) uses both direct and ultimate edges, so its breadth-first depth is 3
+levels; nothing was cut by the depth-10 bound and no cycle was met.

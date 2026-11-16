@@ -40,7 +40,6 @@ that belong to exactly one party) and nothing is merged.
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -205,7 +204,7 @@ class CanonicalBuilder:
             for v in ("_t2_abn", "_t2_acn"):
                 con.unregister(v)
             for t in ("_abr", "_asic", "_names", "_abr_alias", "_asic_alias", "_pair", "_conflict",
-                      "_clean", "_party", "_qrow"):
+                      "_idclean", "_named", "_mismatch", "_clean", "_party", "_qrow"):
                 con.execute(f"DROP TABLE IF EXISTS {t}")
         stats = self.stats()
         stats.wall_clock_s = time.perf_counter() - started
@@ -215,7 +214,15 @@ class CanonicalBuilder:
         con = self.con
         con.execute(
             f"""CREATE OR REPLACE TEMP TABLE _abr AS
-                SELECT record_id AS abn, acn, name_raw, name_norm,
+                SELECT record_id AS abn,
+                       -- A trust, partnership, fund or individual cannot own an ACN: the number on
+                       -- such an ABR record is the trustee's / general partner's, so it is not
+                       -- used to pair or assign (it stays in the source record).
+                       CASE WHEN payload->>'entity_type_code' IN ('IND', 'PTR', 'LPT')
+                                 OR regexp_matches(coalesce(payload->>'entity_type_text', ''),
+                                                   '(?i)trust|partnership|fund|individual')
+                            THEN NULL ELSE acn END AS acn,
+                       name_raw, name_norm,
                        coalesce(party_type, 'organisation') AS party_type,
                        payload->>'abn_status' AS abn_status,
                        TRY_CAST(payload->>'abn_status_from' AS DATE) AS abn_status_from,
@@ -233,9 +240,13 @@ class CanonicalBuilder:
         con.execute(
             f"""CREATE OR REPLACE TEMP TABLE _asic AS
                 WITH latest AS (
-                    SELECT record_id AS acn, abn, name_raw, name_norm, payload, last_seen_snapshot
-                    FROM source_record WHERE source = 'asic_company'
-                    QUALIFY row_number() OVER (PARTITION BY record_id ORDER BY {_LATEST}) = 1),
+                    -- ACN-scheme records only: an ARBN body (FNOS / RACN) has acn NULL.
+                    SELECT * FROM (
+                        SELECT record_id AS acn, acn AS acn_col, abn, name_raw, name_norm, payload,
+                               last_seen_snapshot
+                        FROM source_record WHERE source = 'asic_company'
+                        QUALIFY row_number() OVER (PARTITION BY record_id ORDER BY {_LATEST}) = 1)
+                    WHERE acn_col IS NOT NULL),
                 abn_claims AS (SELECT abn, count(*) AS n_acn FROM latest WHERE abn IS NOT NULL GROUP BY abn)
                 SELECT l.acn, l.abn, l.name_raw, l.name_norm,
                        l.payload->>'status' AS asic_status, l.payload->>'type' AS asic_type,
@@ -300,123 +311,112 @@ class CanonicalBuilder:
                FROM _abr a JOIN _asic s ON s.abn = a.abn
                WHERE a.acn IS NULL"""
         )
-        # One row per (invariant, involved record). detail is deterministic JSON.
+        # Identifier invariants. One row per (invariant, involved record): abr_abn or
+        # asic_acn says which record; conflict_acn is the ACN whose ownership is in doubt.
         con.execute(
-            f"""CREATE OR REPLACE TEMP TABLE _conflict AS
+            """CREATE OR REPLACE TEMP TABLE _conflict AS
             WITH multi AS (
-                SELECT acn, list(abn ORDER BY abn) AS abns,
-                       list(abn || ':' || coalesce(abn_status, '?') ORDER BY abn) AS abn_status
+                SELECT acn, list(abn || ':' || coalesce(abn_status, '?') ORDER BY abn) AS abns
                 FROM _abr WHERE acn IS NOT NULL GROUP BY acn HAVING count(*) > 1),
-            c1 AS (
-                SELECT 'ACN_MULTIPLE_ABN' AS invariant, a.abn AS abr_abn, NULL::VARCHAR AS asic_acn,
-                       m.acn AS conflict_acn, NULL::VARCHAR AS conflict_abn,
-                       json_object('acn', m.acn, 'abr_abns', m.abn_status, 'asic_abn', s.abn) AS detail
-                FROM multi m JOIN _abr a ON a.acn = m.acn LEFT JOIN _asic s ON s.acn = m.acn
-                UNION ALL
-                SELECT 'ACN_MULTIPLE_ABN', NULL, s.acn, m.acn, NULL,
-                       json_object('acn', m.acn, 'abr_abns', m.abn_status, 'asic_abn', s.abn)
-                FROM multi m JOIN _asic s ON s.acn = m.acn),
-            fwd AS (  -- ABR says ABN X has ACN Y; ASIC says ACN Y has ABN Z <> X
-                SELECT a.abn AS x, a.acn AS y, s.abn AS z, s.acn AS asic_acn
+            fwd AS (  -- ABR: ABN X has ACN Y.  ASIC: ACN Y has ABN Z <> X.
+                SELECT a.abn AS x, a.acn AS y, s.abn AS z
                 FROM _abr a JOIN _asic s ON s.acn = a.acn
                 WHERE s.abn IS NOT NULL AND s.abn <> a.abn),
-            rev AS (  -- ASIC says ACN Y2 has ABN X; ABR says ABN X has ACN Y <> Y2
-                SELECT a.abn AS x, a.acn AS y, s.acn AS asic_acn
+            fwd_rec AS (  -- both X and (when it is an ABR party) Z are involved
+                SELECT x AS rec, x, y, z FROM fwd
+                UNION ALL SELECT z, x, y, z FROM fwd WHERE z IN (SELECT abn FROM _abr)),
+            rev AS (  -- ASIC: ACN Y2 has ABN X.  ABR: ABN X has ACN Y <> Y2.
+                SELECT a.abn AS x, a.acn AS y, s.acn AS y2
                 FROM _abr a JOIN _asic s ON s.abn = a.abn
                 WHERE a.acn IS NOT NULL AND s.acn <> a.acn),
-            c2 AS (
-                SELECT 'ABN_ACN_DISAGREE' AS invariant, x AS abr_abn, NULL::VARCHAR AS asic_acn,
-                       y AS conflict_acn, x AS conflict_abn,
-                       json_object('direction', 'abr_acn_vs_asic_abn', 'abr_abn', x, 'abr_acn', y,
-                                   'asic_acn', asic_acn, 'asic_abn', z) AS detail FROM fwd
-                UNION ALL
-                SELECT 'ABN_ACN_DISAGREE', NULL, asic_acn, y, x,
-                       json_object('direction', 'abr_acn_vs_asic_abn', 'abr_abn', x, 'abr_acn', y,
-                                   'asic_acn', asic_acn, 'asic_abn', z) FROM fwd
-                UNION ALL  -- Z, when Z is itself an ABR party, is involved too
-                SELECT 'ABN_ACN_DISAGREE', z, NULL, y, z,
-                       json_object('direction', 'abr_acn_vs_asic_abn', 'abr_abn', x, 'abr_acn', y,
-                                   'asic_acn', asic_acn, 'asic_abn', z)
-                FROM fwd WHERE z IN (SELECT abn FROM _abr)
-                UNION ALL
-                SELECT 'ABN_ACN_DISAGREE', x, NULL, asic_acn, x,
-                       json_object('direction', 'asic_abn_vs_abr_acn', 'abr_abn', x, 'abr_acn', y,
-                                   'asic_acn', asic_acn, 'asic_abn', x) FROM rev
-                UNION ALL
-                SELECT 'ABN_ACN_DISAGREE', NULL, asic_acn, asic_acn, x,
-                       json_object('direction', 'asic_abn_vs_abr_acn', 'abr_abn', x, 'abr_acn', y,
-                                   'asic_acn', asic_acn, 'asic_abn', x) FROM rev),
-            c4 AS (  -- ABR gives no ACN; several ASIC ACNs claim the ABN
-                SELECT 'ABN_MULTIPLE_ACN' AS invariant, a.abn AS abr_abn, s.acn AS asic_acn,
-                       s.acn AS conflict_acn, a.abn AS conflict_abn,
-                       json_object('abn', a.abn, 'asic_acns',
-                                   list(s.acn) OVER (PARTITION BY a.abn ORDER BY s.acn
-                                        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)) AS detail
+            multi_abn AS (  -- ABR gives no ACN for X; several ASIC ACNs claim X.
+                SELECT a.abn AS x, list(s.acn ORDER BY s.acn) AS acns
                 FROM _abr a JOIN _asic s ON s.abn = a.abn
-                WHERE a.acn IS NULL AND s.abn_n_acn > 1),
-            -- Pairs that survive the identifier invariants, then the name test.
-            idclean AS (
-                SELECT p.* FROM _pair p
-                WHERE p.asic_acn NOT IN (SELECT conflict_acn FROM c1 WHERE conflict_acn IS NOT NULL)
-                  AND p.asic_acn NOT IN (SELECT conflict_acn FROM c2 WHERE conflict_acn IS NOT NULL)
-                  AND p.asic_acn NOT IN (SELECT asic_acn FROM c2 WHERE asic_acn IS NOT NULL)
-                  AND p.abr_abn NOT IN (SELECT abr_abn FROM c2 WHERE abr_abn IS NOT NULL
-                                        AND invariant = 'ABN_ACN_DISAGREE'
-                                        AND detail->>'direction' = 'abr_acn_vs_asic_abn')
-                  AND NOT (p.basis = 'asic_abn'
-                           AND p.abr_abn IN (SELECT abr_abn FROM c4 WHERE abr_abn IS NOT NULL))),
-            named AS (
+                WHERE a.acn IS NULL GROUP BY a.abn HAVING count(*) > 1)
+            SELECT DISTINCT invariant, abr_abn, asic_acn, conflict_acn, detail::VARCHAR AS detail FROM (
+                SELECT 'ACN_MULTIPLE_ABN' AS invariant, a.abn AS abr_abn, NULL::VARCHAR AS asic_acn,
+                       m.acn AS conflict_acn,
+                       json_object('acn', m.acn, 'abr_abns', m.abns, 'asic_abn', s.abn) AS detail
+                FROM multi m JOIN _abr a ON a.acn = m.acn LEFT JOIN _asic s ON s.acn = m.acn
+                UNION ALL
+                SELECT 'ACN_MULTIPLE_ABN', NULL, s.acn, m.acn,
+                       json_object('acn', m.acn, 'abr_abns', m.abns, 'asic_abn', s.abn)
+                FROM multi m JOIN _asic s ON s.acn = m.acn
+                UNION ALL
+                SELECT 'ABN_ACN_DISAGREE', rec, NULL, y,
+                       json_object('direction', 'abr_acn_vs_asic_abn', 'abr_abn', x, 'abr_acn', y,
+                                   'asic_acn', y, 'asic_abn', z)
+                FROM fwd_rec
+                UNION ALL
+                SELECT 'ABN_ACN_DISAGREE', NULL, y, y,
+                       json_object('direction', 'abr_acn_vs_asic_abn', 'abr_abn', x, 'abr_acn', y,
+                                   'asic_acn', y, 'asic_abn', z)
+                FROM fwd
+                UNION ALL  -- the ABR side has a consistent ACN here; only the ASIC claim is in doubt
+                SELECT 'ABN_ACN_DISAGREE', NULL, y2, y2,
+                       json_object('direction', 'asic_abn_vs_abr_acn', 'abr_abn', x, 'abr_acn', y,
+                                   'asic_acn', y2, 'asic_abn', x)
+                FROM rev
+                UNION ALL
+                SELECT 'ABN_MULTIPLE_ACN', x, NULL, NULL, json_object('abn', x, 'asic_acns', acns)
+                FROM multi_abn
+                UNION ALL
+                SELECT 'ABN_MULTIPLE_ACN', NULL, acn, acn, json_object('abn', x, 'asic_acns', acns)
+                FROM (SELECT x, acns, unnest(acns) AS acn FROM multi_abn))"""
+        )
+        con.execute(
+            """CREATE OR REPLACE TEMP TABLE _idclean AS
+               SELECT p.* FROM _pair p
+               WHERE p.asic_acn NOT IN (SELECT conflict_acn FROM _conflict WHERE conflict_acn IS NOT NULL)
+                 AND NOT (p.basis = 'asic_abn' AND p.abr_abn IN (
+                          SELECT abr_abn FROM _conflict
+                          WHERE invariant = 'ABN_MULTIPLE_ACN' AND abr_abn IS NOT NULL))"""
+        )
+        # Name test on identifier-clean pairs. "Clearly different" = every similarity test fails.
+        con.execute(
+            """CREATE OR REPLACE TEMP TABLE _named AS
+            WITH n AS (
                 SELECT p.abr_abn, p.asic_acn, p.basis, a.name_norm AS abr_norm, s.name_norm AS asic_norm,
                        a.name_raw AS abr_name, s.name_raw AS asic_name,
-                       coalesce(jaro_winkler_similarity(a.name_norm, s.name_norm), 0) AS jw,
-                       CASE WHEN len(string_split(a.name_norm, ' ')) = 0 OR len(string_split(s.name_norm, ' ')) = 0
-                            THEN 0
-                            ELSE len(list_intersect(list_distinct(string_split(a.name_norm, ' ')),
-                                                    list_distinct(string_split(s.name_norm, ' '))))
-                                 / least(len(list_distinct(string_split(a.name_norm, ' '))),
-                                         len(list_distinct(string_split(s.name_norm, ' '))))
-                       END AS tok
-                FROM idclean p JOIN _abr a ON a.abn = p.abr_abn JOIN _asic s ON s.acn = p.asic_acn),
-            mismatch AS (
-                SELECT n.* FROM named n
-                WHERE coalesce(n.abr_norm, '') <> coalesce(n.asic_norm, '')
-                  AND n.jw < {jw} AND n.tok < {tok}
-                  -- ABR's name is not one of ASIC's former names ...
-                  AND NOT EXISTS (
-                      SELECT 1 FROM _asic_alias f JOIN _names nm USING (alias)
-                      WHERE f.acn = n.asic_acn AND (nm.alias_norm = n.abr_norm
-                            OR jaro_winkler_similarity(nm.alias_norm, n.abr_norm) >= {jw}))
-                  -- ... and ASIC's name is not one of ABR's registered business / trading names.
-                  AND NOT EXISTS (
-                      SELECT 1 FROM _abr_alias o JOIN _names nm USING (alias)
-                      WHERE o.abn = n.abr_abn AND (nm.alias_norm = n.asic_norm
-                            OR jaro_winkler_similarity(nm.alias_norm, n.asic_norm) >= {jw}))),
-            c3 AS (
-                SELECT 'NAME_MISMATCH' AS invariant, abr_abn, NULL::VARCHAR AS asic_acn,
-                       asic_acn AS conflict_acn, abr_abn AS conflict_abn,
-                       json_object('abr_abn', abr_abn, 'asic_acn', asic_acn, 'basis', basis,
-                                   'abr_name', abr_name, 'asic_name', asic_name,
-                                   'jaro_winkler', round(jw, 3), 'token_overlap', round(tok, 3)) AS detail
-                FROM mismatch
-                UNION ALL
-                SELECT 'NAME_MISMATCH', NULL, asic_acn, asic_acn, abr_abn,
-                       json_object('abr_abn', abr_abn, 'asic_acn', asic_acn, 'basis', basis,
-                                   'abr_name', abr_name, 'asic_name', asic_name,
-                                   'jaro_winkler', round(jw, 3), 'token_overlap', round(tok, 3))
-                FROM mismatch)
-            SELECT DISTINCT invariant, abr_abn, asic_acn, conflict_acn, conflict_abn, detail::VARCHAR AS detail
-            FROM (SELECT * FROM c1 UNION ALL SELECT * FROM c2 UNION ALL SELECT * FROM c4
-                  UNION ALL SELECT * FROM c3)"""
+                       list_distinct(string_split(coalesce(a.name_norm, ''), ' ')) AS atok,
+                       list_distinct(string_split(coalesce(s.name_norm, ''), ' ')) AS stok
+                FROM _idclean p JOIN _abr a ON a.abn = p.abr_abn JOIN _asic s ON s.acn = p.asic_acn)
+            SELECT abr_abn, asic_acn, basis, abr_norm, asic_norm, abr_name, asic_name,
+                   coalesce(jaro_winkler_similarity(coalesce(abr_norm, ''), coalesce(asic_norm, '')), 0) AS jw,
+                   len(list_intersect(atok, stok)) / greatest(least(len(atok), len(stok)), 1) AS tok
+            FROM n"""
+        )
+        con.execute(
+            f"""CREATE OR REPLACE TEMP TABLE _mismatch AS
+            SELECT n.* FROM _named n
+            WHERE coalesce(n.abr_norm, '') <> coalesce(n.asic_norm, '')
+              AND n.jw < {jw} AND n.tok < {tok}
+              -- ABR's name is not one of ASIC's former names ...
+              AND NOT EXISTS (
+                  SELECT 1 FROM _asic_alias f JOIN _names nm USING (alias)
+                  WHERE f.acn = n.asic_acn
+                    AND jaro_winkler_similarity(coalesce(nm.alias_norm, ''), coalesce(n.abr_norm, '')) >= {jw})
+              -- ... and ASIC's name is not one of ABR's business / trading / other names.
+              AND NOT EXISTS (
+                  SELECT 1 FROM _abr_alias o JOIN _names nm USING (alias)
+                  WHERE o.abn = n.abr_abn
+                    AND jaro_winkler_similarity(coalesce(nm.alias_norm, ''), coalesce(n.asic_norm, '')) >= {jw})"""
+        )
+        con.execute(
+            """INSERT INTO _conflict
+               SELECT DISTINCT 'NAME_MISMATCH', r.abr_abn, r.asic_acn, m.asic_acn,
+                      json_object('abr_abn', m.abr_abn, 'asic_acn', m.asic_acn, 'basis', m.basis,
+                                  'abr_name', m.abr_name, 'asic_name', m.asic_name,
+                                  'jaro_winkler', round(m.jw, 3), 'token_overlap', round(m.tok, 3))::VARCHAR
+               FROM _mismatch m JOIN (
+                    SELECT abr_abn, NULL::VARCHAR AS asic_acn, abr_abn AS k_abn, asic_acn AS k_acn FROM _mismatch
+                    UNION ALL SELECT NULL, asic_acn, abr_abn, asic_acn FROM _mismatch) r
+                 ON r.k_abn = m.abr_abn AND r.k_acn = m.asic_acn"""
         )
         con.execute(
             """CREATE OR REPLACE TEMP TABLE _clean AS
-               SELECT p.* FROM _pair p
-               WHERE p.asic_acn NOT IN (SELECT asic_acn FROM _conflict WHERE asic_acn IS NOT NULL)
-                 AND p.asic_acn NOT IN (SELECT conflict_acn FROM _conflict
-                                        WHERE conflict_acn IS NOT NULL AND invariant <> 'ABN_ACN_DISAGREE')
-                 AND p.abr_abn NOT IN (SELECT abr_abn FROM _conflict WHERE abr_abn IS NOT NULL
-                                       AND (invariant <> 'ABN_ACN_DISAGREE'
-                                            OR detail->>'direction' = 'abr_acn_vs_asic_abn'))"""
+               SELECT p.* FROM _idclean p
+               ANTI JOIN _mismatch m ON m.abr_abn = p.abr_abn AND m.asic_acn = p.asic_acn"""
         )
 
     def _stage_parties(self) -> None:
@@ -445,7 +445,11 @@ class CanonicalBuilder:
                             WHEN a.abn_status = 'CAN' THEN 'CANCELLED'
                             ELSE a.abn_status END AS status,
                        'abr' AS source, a.abn AS record_id,
-                       CASE WHEN {state_slice} THEN 'state_slice' ELSE 'tier2_reference' END AS slice_reason,
+                       CASE WHEN {state_slice} THEN 'state_slice'
+                            WHEN a.abn IN (SELECT abn FROM _t2_abn) OR a.acn IN (SELECT acn FROM _t2_acn)
+                            THEN 'tier2_reference'
+                            -- loaded only as the other side of an ACN shared by two ABNs
+                            ELSE 'acn_conflict_evidence' END AS slice_reason,
                        'abr' AS origin
                 FROM _abr a LEFT JOIN _clean c ON c.abr_abn = a.abn LEFT JOIN _asic s ON s.acn = c.asic_acn),
             conflict_asic AS (  -- ASIC side of a conflict: kept as its own (quarantined) party
@@ -463,7 +467,8 @@ class CanonicalBuilder:
             -- conflicts with ('state_slice' wins), 'tier2_reference' if Tier 2 references it.
             inherited AS (
                 SELECT k.conflict_acn AS acn, min(p.slice_reason) AS slice_reason
-                FROM _conflict k JOIN abr_p p ON p.abn = k.conflict_abn OR p.abn = k.abr_abn
+                FROM _conflict k JOIN abr_p p
+                  ON p.abn IN (k.abr_abn, k.detail->>'abr_abn', k.detail->>'abn')
                 GROUP BY 1),
             asic_p AS (
                 SELECT 'urn:acn:' || s.acn AS canonical_key, 'organisation' AS party_type,
@@ -487,13 +492,21 @@ class CanonicalBuilder:
         # Quarantine rows: one per (invariant, involved record), with the party it belongs to.
         con.execute(
             """CREATE OR REPLACE TEMP TABLE _qrow AS
-               SELECT DISTINCT
-                      CASE WHEN k.abr_abn IS NOT NULL THEN 'abr' ELSE 'asic_company' END AS source,
-                      coalesce(k.abr_abn, k.asic_acn) AS record_id, k.invariant, k.detail,
-                      CASE WHEN k.abr_abn IS NOT NULL THEN 'urn:abn:' || k.abr_abn
-                           ELSE (SELECT p.canonical_key FROM _party p WHERE p.asic_record_id = k.asic_acn
-                                 ORDER BY p.source DESC LIMIT 1) END AS canonical_key
-               FROM _conflict k"""
+               WITH r AS (
+                   SELECT CASE WHEN k.abr_abn IS NOT NULL THEN 'abr' ELSE 'asic_company' END AS source,
+                          coalesce(k.abr_abn, k.asic_acn) AS record_id, k.invariant, k.detail,
+                          CASE WHEN k.abr_abn IS NOT NULL THEN 'urn:abn:' || k.abr_abn
+                               ELSE (SELECT p.canonical_key FROM _party p WHERE p.asic_record_id = k.asic_acn
+                                     ORDER BY p.source DESC LIMIT 1) END AS canonical_key
+                   FROM _conflict k)
+               -- One row per (invariant, involved record, conflict). A conflict involves several
+               -- records (e.g. two ABR claimants and the ASIC record): each gets its own row, and
+               -- the detail names the record the row is about, so no two rows read the same.
+               SELECT source, record_id, invariant,
+                      json_merge_patch(detail::JSON,
+                                       json_object('record', source || ':' || record_id))::VARCHAR AS detail,
+                      min(canonical_key) AS canonical_key
+               FROM r GROUP BY source, record_id, invariant, detail"""
         )
 
     def _write(self) -> None:
@@ -581,4 +594,4 @@ def build_canonical(store: DuckDBStore, **kwargs: Any) -> BuildStats:
     return CanonicalBuilder(store, **kwargs).build()
 
 
-__all__ = ["INVARIANTS", "BuildStats", "CanonicalBuilder", "build_canonical", "json", "tier2_reference_ids"]
+__all__ = ["INVARIANTS", "BuildStats", "CanonicalBuilder", "build_canonical", "tier2_reference_ids"]

@@ -520,3 +520,74 @@ def test_company_on_scheme_register_is_not_an_arsn():
     ids_, _, kind = tier2.GleifL1Adapter().registration_identifiers(payload, "WAM EXAMPLE LIMITED")
     assert ids_ == [] and kind == "unverified_acn"
     assert payload["unverified_acn"] == "123456780"
+
+
+# --------------------------------------------------------------------------- GLEIF parent closure
+
+
+def _lei(prefix18: str) -> str:
+    num = int("".join(str(int(ch, 36)) for ch in prefix18 + "00"))
+    return prefix18 + f"{98 - num % 97:02d}"
+
+
+def test_consolidation_closure_walks_chain_and_survives_cycle():
+    parents = {"A": {"B"}, "B": {"C"}, "C": {"D"}, "D": {"B"}}  # B -> C -> D -> B cycle
+    added, depth, cut = tier2.consolidation_closure({"A"}, parents, max_depth=10)
+    assert added == {"B", "C", "D"}
+    assert depth == 3 and cut == 0
+
+
+def test_consolidation_closure_is_bounded():
+    parents = {f"N{i}": {f"N{i + 1}"} for i in range(20)}
+    added, depth, cut = tier2.consolidation_closure({"N0"}, parents, max_depth=10)
+    assert depth == 10 and len(added) == 10 and cut == 1
+
+
+def test_filter_gleif_follows_foreign_parent_chain(tmp_path):
+    """AU child -> US parent (fixture) -> foreign grandparent added here: the grandparent
+    and the US-to-grandparent edge must be in the slice; an unrelated foreign edge must not."""
+    import csv as _csv
+
+    grand, other_a, other_b = _lei("FIXTUREGRANDPARENT"), _lei("FIXTUREUNRELATEDA0"), _lei("FIXTUREUNRELATEDB0")
+    foreign = "FIXTUREFOREIGN000124"
+    l1_rows = list(_csv.reader((FIX / "gleif-lei2-fixture.csv").open(encoding="utf-8", newline="")))
+    header, base = l1_rows[0], next(r for r in l1_rows[1:] if r[0] == foreign)
+    for lei_ in (grand, other_a, other_b):
+        l1_rows.append([lei_] + base[1:])
+    rr_rows = list(_csv.reader((FIX / "gleif-rr-fixture.csv").open(encoding="utf-8", newline="")))
+    rr_header = rr_rows[0]
+    template = dict(zip(rr_header, rr_rows[1]))
+    for child, parent, typ in (
+        (foreign, grand, "IS_DIRECTLY_CONSOLIDATED_BY"),
+        (other_a, other_b, "IS_DIRECTLY_CONSOLIDATED_BY"),
+        (foreign, other_b, "IS_FUND-MANAGED_BY"),
+    ):
+        row = dict(template)
+        row.update({"Relationship.StartNode.NodeID": child, "Relationship.EndNode.NodeID": parent,
+                    "Relationship.RelationshipType": typ})
+        rr_rows.append([row[h] for h in rr_header])
+
+    def zipped(rows, name):
+        csv_path = tmp_path / f"{name}.csv"
+        with csv_path.open("w", encoding="utf-8", newline="") as fh:
+            _csv.writer(fh, quoting=_csv.QUOTE_ALL).writerows(rows)
+        z = tmp_path / f"{name}.csv.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.write(csv_path, f"x-{name}-golden-copy.csv")
+        return z
+
+    l1_out, rr_out = tmp_path / "o" / "l1.csv", tmp_path / "o" / "rr.csv"
+    stats = tier2.filter_gleif_golden_copy(zipped(l1_rows, "lei2"), zipped(rr_rows, "rr"), l1_out, rr_out)
+    leis = {row["LEI"] for row in tier2.GleifL1Adapter().parse(l1_out)}
+    edges = {(r["Relationship.StartNode.NodeID"], r["Relationship.RelationshipType"], r["Relationship.EndNode.NodeID"])
+             for r in tier2.GleifL2Adapter().parse(rr_out)}
+    assert grand in leis and (foreign, "IS_DIRECTLY_CONSOLIDATED_BY", grand) in edges
+    assert other_a not in leis and other_b not in leis
+    assert (foreign, "IS_FUND-MANAGED_BY", other_b) not in edges  # chain follows consolidation only
+    assert stats["closure_max_depth"] == 2 and stats["rr_chain_only_edges"] == 1
+
+
+def test_gleif_l1_country_prefers_legal_address(l1):
+    r = l1[0]["FIXTURECHILDAU000136"]
+    assert r.payload["country"] == r.payload["legal_country"] == "AU"
+    assert r.payload["hq_country"] == "AU"
