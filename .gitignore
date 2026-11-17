@@ -19,3 +19,6 @@ fuseki/databases/
 
 # Generated Python package metadata
 *.egg-info/
+
+# Generated demo bundle (rebuilt by demo/build_demo_snapshot.py; published separately)
+demo/bundle/

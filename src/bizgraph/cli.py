@@ -470,6 +470,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("fuseki-ping", help="check Fuseki is reachable").set_defaults(func=cmd_fuseki_ping)
     _add_rdf_commands(sub)
     _add_service_commands(sub)
+    from bizgraph.resolution.cli_commands import add_resolution_commands
+
+    add_resolution_commands(sub)
+    from bizgraph.evaluation.cli_commands import add_evaluation_commands
+
+    add_evaluation_commands(sub)
     return p
 
 

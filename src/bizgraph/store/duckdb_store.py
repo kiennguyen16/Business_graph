@@ -165,6 +165,16 @@ CREATE TABLE IF NOT EXISTS abstention (
 -- Why the matcher refused (explanation, best candidate features, query text); written by bizgraph.resolution.
 ALTER TABLE abstention ADD COLUMN IF NOT EXISTS evidence JSON;
 
+-- The reference as the matcher saw it, once per (run, source, record) instead of on every
+-- candidate row (candidate.features no longer repeats it). Written by bizgraph.resolution.
+CREATE TABLE IF NOT EXISTS candidate_ref (
+    run_id    VARCHAR NOT NULL,
+    source    VARCHAR NOT NULL,
+    record_id VARCHAR NOT NULL,
+    ref       JSON,
+    PRIMARY KEY (run_id, source, record_id)
+);
+
 CREATE TABLE IF NOT EXISTS label (
     sample_id     VARCHAR NOT NULL,
     source        VARCHAR NOT NULL,
@@ -187,6 +197,7 @@ TABLES = (
     "alias",
     "quarantine",
     "candidate",
+    "candidate_ref",
     "matcher_version",
     "link",
     "abstention",

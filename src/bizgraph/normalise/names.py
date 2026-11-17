@@ -97,21 +97,43 @@ class NameNormaliser:
         text = _PUNCT.sub(" ", text)
         return _SPACE.sub(" ", text).strip()
 
+    # Words that are a legal form at the end of most names but part of the name in others
+    # ('SIMPLY CORPORATION', 'WT FINANCE CO'): stripped only when a distinctive name remains.
+    _WEAK_FORMS = frozenset({"CORPORATION", "CORP", "COMPANY", "CO"})
+
+    @staticmethod
+    def _too_thin(rest: str) -> bool:
+        """True when `rest` would be a single token, or has no distinctive token (all generic
+        words or tokens of 2 characters or fewer)."""
+        toks = re.sub(r"\s+AND$", "", rest).split()
+        if len(toks) <= 1:
+            return True
+        return not any(t not in GENERIC_TOKENS and len(t) > 2 for t in toks)
+
     def _strip_legal_form(self, text: str) -> tuple[str, str | None]:
         for form, canonical in _LEGAL_FORMS:
             if text == form:
                 continue
             if text.endswith(" " + form):
-                return text[: -len(form) - 1].strip(), canonical
+                rest = text[: -len(form) - 1].strip()
+                if form in self._WEAK_FORMS and self._too_thin(rest):
+                    return text, None  # 'SIMPLY CORPORATION' stays itself
+                return rest, canonical
         return text, None
 
     def _strip_entity_name(self, text: str) -> tuple[str, str | None]:
         """Remove a leading THE, trailing legal forms (repeatedly, e.g. "& CO PTY LTD") and dangling AND."""
         text = re.sub(r"^THE\s+", "", text)
         legal_form = None
-        for _ in range(2):
+        for i in range(2):
+            before = text
             text, form = self._strip_legal_form(text)
             if form is None:
+                break
+            if i == 1 and form != "CO":
+                # Only '... & CO PTY LTD' loses a second form; in 'GARNET CORPORATION PTY LTD'
+                # the CORPORATION is part of the registered name.
+                text = before
                 break
             legal_form = legal_form or form
             text = re.sub(r"\s+AND$", "", text)  # "SMITH AND CO" -> "SMITH"

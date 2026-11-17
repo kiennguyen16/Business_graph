@@ -54,7 +54,7 @@ State (~5M per value), status (~10M), country, ANZSIC, postcode, legal form, sou
 
 ## 8. Match types
 
-Exact path: `EXACT_ABN`, `EXACT_ACN`, `EXACT_LEI`, `EXACT_LICENCE_NO`, `NAME_NORMALISED_EXACT` (one compatible party only). Semantic path: `NAME_FUZZY`, `NAME_SEMANTIC`, `WIKIDATA_ALIAS`. An identifier match always wins; a semantic match never overrides a conflicting identifier (`IDENTIFIER_CONFLICT`). Abstain reasons: `NO_CANDIDATE`, `BELOW_THRESHOLD`, `AMBIGUOUS`, `IDENTIFIER_CONFLICT`, `PARTY_TYPE_CONFLICT`, `QUARANTINED_TARGET`.
+Exact path: `EXACT_ABN`, `EXACT_ACN`, `EXACT_LEI`, `EXACT_LICENCE_NO`, `NAME_NORMALISED_EXACT` (one compatible party only). Semantic path: `NAME_FUZZY`, `NAME_SEMANTIC`, `WIKIDATA_ALIAS`. Identifiers always win; names never override a conflicting identifier. Abstain reasons: `NO_CANDIDATE`, `BELOW_THRESHOLD`, `AMBIGUOUS`, `IDENTIFIER_CONFLICT`, `PARTY_TYPE_CONFLICT`, `QUARANTINED_TARGET`, `JURISDICTION_MISMATCH` (a foreign entity may name-link only to its own AU foreign-body registration).
 
 ## 9. Source records are never deleted
 
@@ -64,7 +64,6 @@ Parties, roles and links are derived views: undoing a merge or recalibrating mea
 
 - Validity time is `bg:validFrom` / `bg:validTo`; load time is the snapshot graph's date.
 - A change seen only between weekly snapshots gets **bounds**: `bg:validToNotBefore` (last snapshot showing it), `bg:validToNotAfter` (day before the first without it), and the same pair for the start. A single `validTo` would claim precision we lack and answer "valid on D?" wrongly for up to a week; with bounds the answer is yes, no or unknown.
-- Name and status history live in DuckDB snapshots, not yet as dated facts (`bg:Naming` is the extension).
 
 ## 11. IRIs
 

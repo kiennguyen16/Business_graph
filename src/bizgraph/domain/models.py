@@ -136,6 +136,9 @@ class AbstainReason(StrEnum):
     IDENTIFIER_CONFLICT = "IDENTIFIER_CONFLICT"
     PARTY_TYPE_CONFLICT = "PARTY_TYPE_CONFLICT"
     QUARANTINED_TARGET = "QUARANTINED_TARGET"
+    # A non-Australian legal entity whose only name match is an Australian-incorporated party
+    # (not that entity's Australian registration as a foreign body).
+    JURISDICTION_MISMATCH = "JURISDICTION_MISMATCH"
 
 
 @dataclass

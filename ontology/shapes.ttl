@@ -409,7 +409,7 @@ bgsh:AbstentionShape a sh:NodeShape ;
     sh:property [ sh:path bg:sourceRecord ; sh:minCount 1 ; sh:maxCount 1 ; sh:class bg:SourceRecord ] ;
     sh:property [ sh:path bg:abstainReason ; sh:minCount 1 ; sh:maxCount 1 ;
                   sh:in ( bg:NO_CANDIDATE bg:BELOW_THRESHOLD bg:AMBIGUOUS bg:IDENTIFIER_CONFLICT
-                          bg:PARTY_TYPE_CONFLICT bg:QUARANTINED_TARGET ) ] ;
+                          bg:PARTY_TYPE_CONFLICT bg:QUARANTINED_TARGET bg:JURISDICTION_MISMATCH ) ] ;
     sh:property [ sh:path bg:bestCandidate ; sh:maxCount 1 ; sh:class bg:Party ] ;
     sh:property [ sh:path bg:score ; sh:maxCount 1 ; sh:datatype xsd:decimal ;
                   sh:minInclusive 0 ; sh:maxInclusive 1 ] ;

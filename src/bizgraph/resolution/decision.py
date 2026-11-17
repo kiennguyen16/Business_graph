@@ -59,16 +59,46 @@ class ExactScorer(Scorer):
         return 1.0 if fv.identifier_match and not fv.identifier_conflict else 0.0
 
 
-def _adjustments(fv: FeatureVector) -> float:
-    """Score adjustments shared by the fuzzy and semantic paths."""
-    adj = 0.0
-    if fv.state_match is False:  # the reference stated a state and the party is elsewhere
-        adj -= FuzzyScorer.STATE_PENALTY
-    elif fv.state_match is True:
-        adj += FuzzyScorer.STATE_BONUS  # tie-breaker between same-name parties
-    if not fv.legal_form_compatible:
-        adj -= FuzzyScorer.LEGAL_FORM_PENALTY
-    return adj
+@dataclass(frozen=True)
+class ScorerConfig:
+    """Every number the scorers use. Recorded in the matcher version's config; passing a new
+    one to `Matcher.redecide` recomputes the scores from the stored features (no re-match).
+
+    state_penalty_text      the reference text explicitly states a state and the party is elsewhere
+    state_penalty_register  register-to-register (e.g. GLEIF legal address vs ABR business
+                            location): the two addresses mean different things, so a small penalty
+    state_bonus             tie-breaker when the states agree
+    """
+
+    w_jw: float = 0.30
+    w_tsr: float = 0.20
+    w_tok: float = 0.50
+    legal_form_penalty: float = 0.10
+    state_penalty_text: float = 0.15
+    state_penalty_register: float = 0.05
+    state_bonus: float = 0.02
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> ScorerConfig:
+        d = d or {}
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+    def adjustments(self, fv: FeatureVector) -> float:
+        """Score adjustments shared by the fuzzy and semantic paths."""
+        adj = 0.0
+        if fv.state_match is False:
+            adj -= self.state_penalty_text if fv.state_basis == "text" else self.state_penalty_register
+        elif fv.state_match is True:
+            adj += self.state_bonus
+        if not fv.legal_form_compatible:
+            adj -= self.legal_form_penalty
+        return adj
+
+    def scorers(self) -> tuple[Scorer, ...]:
+        return (ExactScorer(), FuzzyScorer(self), SemanticScorer(self))
 
 
 class FuzzyScorer(Scorer):
@@ -76,19 +106,19 @@ class FuzzyScorer(Scorer):
 
     token_set_ratio alone scores a subset as 1.0 ('COMMONWEALTH' vs 'COMMONWEALTH BANK'),
     so half the weight sits on the Jaccard over all meaningful tokens (generic words included,
-    Australian geography words exempt), which punishes extra or missing tokens on either side:
-    'Quorva' scores the same against QUORVA TRADING and QUORVA TRADERS.
+    Australian geography words exempt for informal references), which punishes extra or missing
+    tokens on either side: 'Quorva' scores the same against QUORVA TRADING and QUORVA TRADERS.
     """
 
     name = "fuzzy"
-    W_JW, W_TSR, W_TOK = 0.30, 0.20, 0.50
-    LEGAL_FORM_PENALTY = 0.10
-    STATE_PENALTY = 0.15
-    STATE_BONUS = 0.02
+
+    def __init__(self, config: ScorerConfig | None = None) -> None:
+        self.config = config or ScorerConfig()
 
     def score(self, fv: FeatureVector) -> float:
-        s = self.W_JW * fv.jaro_winkler + self.W_TSR * fv.token_set_ratio + self.W_TOK * fv.token_overlap
-        return round(min(1.0, max(0.0, s + _adjustments(fv))), 4)
+        c = self.config
+        s = c.w_jw * fv.jaro_winkler + c.w_tsr * fv.token_set_ratio + c.w_tok * fv.token_overlap
+        return round(min(1.0, max(0.0, s + c.adjustments(fv))), 4)
 
 
 class SemanticScorer(Scorer):
@@ -97,13 +127,17 @@ class SemanticScorer(Scorer):
 
     name = "semantic"
 
+    def __init__(self, config: ScorerConfig | None = None) -> None:
+        self.config = config or ScorerConfig()
+
     def score(self, fv: FeatureVector) -> float | None:
         if fv.embedding_cosine is None:
             return None
-        return round(min(1.0, max(0.0, fv.embedding_cosine + _adjustments(fv))), 4)
+        return round(min(1.0, max(0.0, fv.embedding_cosine + self.config.adjustments(fv))), 4)
 
 
-DEFAULT_SCORERS: tuple[Scorer, ...] = (ExactScorer(), FuzzyScorer(), SemanticScorer())
+DEFAULT_SCORER_CONFIG = ScorerConfig()
+DEFAULT_SCORERS: tuple[Scorer, ...] = DEFAULT_SCORER_CONFIG.scorers()
 
 
 def score_all(fv: FeatureVector, scorers: tuple[Scorer, ...] = DEFAULT_SCORERS) -> dict[str, float | None]:
@@ -270,6 +304,9 @@ def _name_path(c: StoredCandidate, policy: ThresholdPolicy, strict: bool) -> tup
         why = "entity kind conflict (trust or fund vs company)"
     elif fv.geo_conflict:  # R5e
         why = "formal name without AUSTRALIA vs an Australian-named candidate (likely another group entity)"
+    elif fv.trust_like and (fv.postcode_match is False or fv.state_match is False):  # R5h
+        why = ("trust or super fund: "
+               + ("postcode differs" if fv.postcode_match is False else "stated state differs"))
     elif fv.weak_alias:  # R5f
         why = f"formal name matches only a {fv.compared_name_kind} of the candidate, not a legal name"
     elif fv.ref_formal and fv.candidate_extra_tokens:  # R5g
@@ -291,6 +328,17 @@ def _name_path(c: StoredCandidate, policy: ThresholdPolicy, strict: bool) -> tup
     return MatchType.NAME_FUZZY, fuzzy, True, None
 
 
+SOFT_TYPE_BASES = ("gleif_entity_category", "sole_proprietor")
+
+
+def _soft_type_hint(ref_info: dict[str, Any]) -> bool:
+    """The reference's party type is a hint, not a register fact (GLEIF entity category,
+    GLEIF SOLE_PROPRIETOR, or unknown)."""
+    if (ref_info.get("party_type_hint") or "unknown") == "unknown":
+        return True
+    return str(ref_info.get("party_type_basis") or "").startswith(SOFT_TYPE_BASES)
+
+
 def arbitrate(
     ref_info: dict[str, Any],
     candidates: list[StoredCandidate],
@@ -304,7 +352,10 @@ def arbitrate(
         a. the winning identifiers point at two or more parties -> abstain IDENTIFIER_CONFLICT
         b. the matched party disagrees on another party identifier (a GLEIF DUPLICATE LEI
            never counts)                                        -> abstain IDENTIFIER_CONFLICT
-        c. person vs organisation                               -> abstain PARTY_TYPE_CONFLICT
+        c. person vs organisation                               -> abstain PARTY_TYPE_CONFLICT,
+           except when an ABN stated by the source matches and the reference's type is only
+           a hint (GLEIF entity category / SOLE_PROPRIETOR, or unknown): link EXACT_ABN and
+           record the type disagreement in the evidence
         d. the party is quarantined                             -> abstain QUARANTINED_TARGET
         e. rivals = other parties whose name path alone clears the threshold (vetoed or not),
            plus licence matches elsewhere. Licence-only match with a rival, or any rival on
@@ -316,6 +367,9 @@ def arbitrate(
         name never overrides an identifier). If the veto blocked a candidate that would
         otherwise clear the threshold                           -> abstain IDENTIFIER_CONFLICT.
     R3  Person vs organisation candidates are vetoed the same way -> PARTY_TYPE_CONFLICT.
+    R3b A reference whose legal jurisdiction is not AU (GLEIF) may match on name only a party
+        that is the Australian registration of a foreign body (ABR OIE, ASIC FNOS / RACN,
+        ARBN); any other name candidate is vetoed                 -> JURISDICTION_MISMATCH.
         A vetoed candidate below the threshold is only a weak candidate (R8 applies).
     R4  A person reference is never linked on a name alone (policy.person_name_links). An
         UNKNOWN reference shaped like a person's name ('John Smith') counts as a person
@@ -334,6 +388,8 @@ def arbitrate(
            carries a legal form or comes from a register (GLEIF, ASIC registers): its name
            is a registered legal name;
         f. a formal name does not match through a business / trading / other name alias;
+        h. a trust or super fund (either side) needs postcode agreement when both sides have
+           one, and a stated state that differs is a veto, not a penalty;
         g. a formal name does not match a candidate whose name has extra tokens
            ('... SHARES FUND' is not '... SUSTAINABLE SHARES FUND').
     R6  NAME_NORMALISED_EXACT when the normalised name (or a registered legal-name alias) is
@@ -342,7 +398,8 @@ def arbitrate(
     R7  Otherwise NAME_FUZZY with the fuzzy score, or NAME_SEMANTIC when the embedding
         cosine (same adjustments) is higher, the candidate has no extra token, and the fuzzy
         score clears policy.semantic_min_fuzzy. Adjustments: a stated state that differs
-        -0.15, a stated state that matches +0.02.
+        -0.15 when the reference text states it, -0.05 register to register; a matching
+        state +0.02 (all in ScorerConfig).
     R8  Best score below policy.threshold(source, type)         -> abstain BELOW_THRESHOLD.
     R9  The best eligible candidate is quarantined               -> abstain QUARANTINED_TARGET.
     R10 Best minus second-best eligible (another party), rounded to 4 dp, below
@@ -378,6 +435,9 @@ def arbitrate(
             veto = f"identifier conflict on {','.join(fv.identifier_conflict_schemes)}"
         elif not fv.type_compatible:
             veto = f"party type conflict (reference {hint}, candidate {fv.candidate_party_type})"
+        elif fv.jurisdiction_conflict and not fv.identifier_match:
+            veto = (f"jurisdiction mismatch: {fv.ref_jurisdiction} entity vs an Australian-incorporated party "
+                    f"({fv.candidate_entity_type or 'unknown type'}), not a foreign-body registration")
         if fv.identifier_match:
             label, score, eligible, why = _exact_label(fv), (1.0 if veto is None else 0.0), veto is None, veto
             path = "exact"
@@ -393,7 +453,12 @@ def arbitrate(
                              sorted(c.paths), c.query_text, fv.as_dict(), c.scores, would_pass)
         ranked.append(rc)
         if veto and not fv.identifier_match and would_pass:
-            kind = AbstainReason.IDENTIFIER_CONFLICT if fv.identifier_conflict else AbstainReason.PARTY_TYPE_CONFLICT
+            if fv.identifier_conflict:
+                kind = AbstainReason.IDENTIFIER_CONFLICT
+            elif not fv.type_compatible:
+                kind = AbstainReason.PARTY_TYPE_CONFLICT
+            else:
+                kind = AbstainReason.JURISDICTION_MISMATCH
             blocked.append((rc, kind))
     ranked.sort(key=lambda r: (not r.features["identifier_match"], not r.eligible, -r.score, r.canonical_key))
 
@@ -410,12 +475,21 @@ def arbitrate(
                            f"reference identifiers point at {len(keys)} different parties: {', '.join(keys)}")
         top = hits[0]
         f = top.features
+        if top.veto and not f["identifier_conflict"] and not f["type_compatible"] \
+                and "abn" in f["identifier_match_schemes"] and _soft_type_hint(ref_info):
+            top.eligible, top.veto, top.score = True, None, 1.0
         if f["identifier_conflict"]:
             return abstain(AbstainReason.IDENTIFIER_CONFLICT, ranked,
                            f"{','.join(f['identifier_match_schemes'])} matches {top.canonical_key} but "
                            f"{','.join(f['identifier_conflict_schemes'])} disagrees", top)
+        type_note = None
         if not f["type_compatible"]:
-            return abstain(AbstainReason.PARTY_TYPE_CONFLICT, ranked, top.veto or "party type conflict", top)
+            if "abn" in f["identifier_match_schemes"] and _soft_type_hint(ref_info):
+                # R1c exception: the source states the ABN; its party type is only a hint.
+                type_note = (f"party type hint {hint} ({ref_info.get('party_type_basis')}) disagrees with "
+                             f"the ABN holder's type {f.get('candidate_party_type')}; the stated ABN wins")
+            else:
+                return abstain(AbstainReason.PARTY_TYPE_CONFLICT, ranked, top.veto or "party type conflict", top)
         if f["candidate_quarantined"]:
             return abstain(AbstainReason.QUARANTINED_TARGET, ranked,
                            f"identifier resolves to quarantined party {top.canonical_key}", top)
@@ -440,6 +514,9 @@ def arbitrate(
         why = f"{top.match_type}: {','.join(f['identifier_match_schemes'])} equal, no identifier disagrees"
         if disagreement:
             why += "; identifier wins over the name path"
+        if type_note:
+            disagreement = f"{disagreement}; {type_note}" if disagreement else type_note
+            why += "; " + type_note
         ev = Evidence(top.features, "exact", top.found_by, top.query_text, top.scores, why, threshold,
                       None, disagreement)
         return Link(source, record_id, ranked, why, canonical_key=top.canonical_key,

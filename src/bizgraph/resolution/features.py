@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 from rapidfuzz.distance import JaroWinkler
 
 from bizgraph.normalise.names import GENERIC_TOKENS, NameNormaliser, NormalisedName
-from bizgraph.resolution.reference import LICENCE_SCHEMES, PARTY_SCHEMES, Reference
+from bizgraph.resolution.reference import LICENCE_SCHEMES, PARTY_SCHEMES, REGISTER_SOURCES, Reference
 
 # Legal form families. Two forms conflict only when both are present and the families differ.
 # None means the form says nothing about the register (CORP / CO appear in statutory names).
@@ -48,6 +48,9 @@ class PartyView:
     identifiers: dict[str, frozenset[str]]  # scheme -> values
     names: tuple[tuple[str, str], ...] = ()  # (name_norm, kind) incl. aliases
     name_raw_by_norm: dict[str, str] = field(default_factory=dict)
+    postcode: str | None = None
+    entity_type: str | None = None  # ABR entity type code (PRV, OIE, DTT, SMF, ...) or ASIC type
+    foreign_registration: bool = False  # the Australian registration of a foreign body (FNOS / OIE / ARBN)
 
 
 @dataclass
@@ -67,6 +70,7 @@ class FeatureVector:
     distinctive_extra: list[str] = field(default_factory=list)  # candidate tokens not in the reference
     legal_form_compatible: bool = True
     state_match: bool | None = None
+    state_basis: str | None = None  # 'text' (stated in a free-text reference) or 'register'
     type_compatible: bool = True
     candidate_party_type: str | None = None
     candidate_quarantined: bool = False
@@ -83,6 +87,16 @@ class FeatureVector:
     ref_formal: bool = False  # the reference is a registered legal name (legal form or register source)
     ref_legal_form: str | None = None
     candidate_legal_form: str | None = None
+    # v3 gate inputs, stored so a gate change can be replayed by redecide
+    ref_jurisdiction: str | None = None
+    candidate_foreign_registration: bool = False
+    jurisdiction_conflict: bool = False  # non-AU reference vs an Australian-incorporated party
+    ref_postcode: str | None = None
+    candidate_postcode: str | None = None
+    postcode_match: bool | None = None
+    trust_like: bool = False  # trust or super fund on either side (needs postcode / state agreement)
+    candidate_entity_type: str | None = None
+    party_type_basis: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -100,6 +114,10 @@ STOP_TOKENS: frozenset[str] = frozenset({"THE", "OF", "AND", "FOR"})
 # country words are NOT exempt: 'X (NZ) LIMITED' is a different entity from the Australian X.
 AU_GEO: frozenset[str] = frozenset({"AUSTRALIA", "AUSTRALIAN", "AUST", "AUS"})
 TRUST_END: frozenset[str] = frozenset({"TRUST", "FUND", "SCHEME"})
+# ABR entity types that are trusts or superannuation funds.
+TRUST_ENTITY_TYPES: frozenset[str] = frozenset(
+    "SMF DTT DIT FUT DST TRT FXT HYT PQT CUT CMT PUT PTT STU SSS NRF POF NPF PST".split()
+)
 WEAK_ALIAS_KINDS: frozenset[str] = frozenset({"business_name", "trading_name", "other_name", "dgr_name"})
 COMPANY_FAMILIES: frozenset[str] = frozenset({"proprietary", "public"})
 
@@ -121,7 +139,7 @@ def entity_kind(norm: str | None, legal_form: str | None, raw: str | None = None
     return None
 
 
-def token_alignment(ref: list[str], cand: list[str]) -> tuple[list[str], list[str], int]:
+def token_alignment(ref: list[str], cand: list[str], typos: bool = True) -> tuple[list[str], list[str], int]:
     """Greedy one-to-one alignment of token lists (multiset). Returns (missing, extra, matched)."""
     remaining = list(cand)
     missing: list[str] = []
@@ -129,7 +147,7 @@ def token_alignment(ref: list[str], cand: list[str]) -> tuple[list[str], list[st
     for t in ref:
         hit = next((i for i, c in enumerate(remaining) if c == t), None)
         if hit is None:
-            hit = next((i for i, c in enumerate(remaining) if _token_match(t, c)), None)
+            hit = next((i for i, c in enumerate(remaining) if typos and _token_match(t, c)), None)
         if hit is None:
             missing.append(t)
         else:
@@ -160,13 +178,15 @@ def is_generic_typo(token: str) -> bool:
     return hit
 
 
-def distinctive_alignment(ref: frozenset[str], cand: frozenset[str]) -> tuple[list[str], list[str], int]:
+def distinctive_alignment(ref: frozenset[str], cand: frozenset[str], typos: bool = True
+                          ) -> tuple[list[str], list[str], int]:
     """Greedy one-to-one alignment. Returns (ref tokens unmatched, cand tokens unmatched, matched)."""
     remaining = set(cand)
     missing: list[str] = []
     matched = 0
     for t in sorted(ref):
-        hit = t if t in remaining else next((c for c in sorted(remaining) if _token_match(t, c)), None)
+        hit = t if t in remaining else next(
+            (c for c in sorted(remaining) if typos and _token_match(t, c)), None)
         if hit is None:
             missing.append(t)
         else:
@@ -281,8 +301,18 @@ class FeatureExtractor:
             and hint != party.party_type
         )
         fv.candidate_quarantined = bool(party.quarantined)
+        fv.ref_jurisdiction = ref.jurisdiction
+        fv.candidate_foreign_registration = bool(party.foreign_registration)
+        fv.jurisdiction_conflict = bool(ref.jurisdiction and ref.jurisdiction != "AU"
+                                        and not party.foreign_registration)
+        fv.ref_postcode, fv.candidate_postcode = ref.postcode, party.postcode
+        if ref.postcode and party.postcode:
+            fv.postcode_match = ref.postcode == party.postcode
+        fv.candidate_entity_type = party.entity_type
+        fv.party_type_basis = ref.party_type_basis
         if ref.state and party.state:
             fv.state_match = ref.state.upper() == party.state.upper()
+            fv.state_basis = ref.state_basis
 
         # ---- names: compare against every name / alias of the party; keep the one that misses the
         # fewest reference tokens, then the most similar
@@ -301,7 +331,9 @@ class FeatureExtractor:
             if not norm:
                 continue
             cand_core = [t for t in meaningful_tokens(norm) if t not in exempt]
-            missing, extra, matched = token_alignment(ref_core, cand_core)
+            # A name read from a register is spelt exactly: no typo tolerance ('SUNRISE MEDICAL' is
+            # not 'SUNRISE MEDIA'); free text keeps it ('Comonwealth Bank').
+            missing, extra, matched = token_alignment(ref_core, cand_core, typos=ref.source not in REGISTER_SOURCES)
             if norm == ref_norm:
                 key = (-1, 0.0)
             else:
@@ -325,7 +357,7 @@ class FeatureExtractor:
         cn = self._normalise_norm(cnorm, person=party.party_type == "person")
         cand_d = frozenset(t for t in (cn.distinctive if cn else ()) if not is_generic_typo(t))
         ref_d = frozenset(t for t in ref.distinctive if not is_generic_typo(t))
-        missing, extra, matched = distinctive_alignment(ref_d, cand_d)
+        missing, extra, matched = distinctive_alignment(ref_d, cand_d, typos=ref.source not in REGISTER_SOURCES)
         union = len(ref_d) + len(cand_d) - matched
         fv.distinctive_overlap = round(matched / union, 4) if union else 0.0
         fv.distinctive_coverage = round(matched / len(ref_d), 4) if ref_d else 0.0
@@ -345,6 +377,8 @@ class FeatureExtractor:
         rk = entity_kind(ref_norm, ref_form, ref.name_raw)
         ck = entity_kind(cnorm, cand_form or current_form, cand_raw)
         fv.entity_kind_conflict = bool(rk and ck and rk != ck)
+        fv.trust_like = (rk == "trust" or ck == "trust" or (party.entity_type or "") in TRUST_ENTITY_TYPES
+                         or any(t in ("SUPER", "SUPERANNUATION", "SUPERFUND") for t in ref_toks))
         formal = ref.formal
         fv.ref_formal = formal
         cand_geo = any(t in AU_GEO for t in meaningful_tokens(cnorm))

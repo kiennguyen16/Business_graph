@@ -62,6 +62,23 @@ COMMON_SURNAMES: frozenset[str] = frozenset(
 )
 
 
+def _jurisdiction(payload: dict[str, Any]) -> str | None:
+    """Country of the legal jurisdiction ('AU-NSW' -> 'AU'), else of the legal address (GLEIF)."""
+    j = payload.get("legal_jurisdiction") or payload.get("legal_country")
+    return str(j).strip().upper()[:2] or None if j else None
+
+
+def _postcode(payload: dict[str, Any]) -> str | None:
+    """An Australian 4-digit postcode stated by the source (register address or GLEIF legal address)."""
+    pc = payload.get("postcode")
+    if not pc:
+        addr = payload.get("legal_address") or {}
+        if (addr.get("country") or "").upper() == "AU":
+            pc = addr.get("postalcode")
+    pc = str(pc).strip() if pc else ""
+    return pc if len(pc) == 4 and pc.isdigit() else None
+
+
 def _normalise(names: NameNormaliser, raw: str | None, ptype: PartyType) -> NormalisedName | None:
     """Individuals get the person normaliser ('LAST, GIVEN' -> 'GIVEN LAST', no legal forms)."""
     if ptype is PartyType.PERSON:
@@ -82,6 +99,10 @@ class Reference:
     record_id: str = ""
     lei_status: str | None = None
     notes: tuple[str, ...] = field(default_factory=tuple)
+    state_basis: str = "register"  # 'text' when a free-text reference states the state
+    jurisdiction: str | None = None  # ISO country of the legal jurisdiction (GLEIF), e.g. 'AU', 'NZ'
+    postcode: str | None = None  # Australian postcode stated by the source
+    party_type_basis: str | None = None  # how the source's party type was decided
 
     def alternative(self, normaliser: NameNormaliser | None = None) -> Reference | None:
         """The trading-as name ('X Pty Ltd t/as Y' -> Y) as a reference of its own, matched
@@ -136,6 +157,10 @@ class Reference:
             "identifiers": [[i.scheme.value, i.value] for i in self.identifiers],
             "party_type_hint": str(self.party_type_hint),
             "state": self.state,
+            "state_basis": self.state_basis,
+            "jurisdiction": self.jurisdiction,
+            "postcode": self.postcode,
+            "party_type_basis": self.party_type_basis,
             "lei_status": self.lei_status,
             "notes": list(self.notes),
         }
@@ -174,6 +199,9 @@ class Reference:
             record_id=record.record_id,
             lei_status=str(lei_status) if lei_status else None,
             notes=tuple(notes),
+            jurisdiction=_jurisdiction(payload),
+            postcode=_postcode(payload),
+            party_type_basis=payload.get("party_type_basis"),
         )
 
 
@@ -273,6 +301,7 @@ class ReferenceParser:
             state=state,
             source=source,
             record_id=record_id,
+            state_basis="text",
             notes=tuple(notes),
         )
 

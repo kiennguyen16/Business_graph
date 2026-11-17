@@ -1,0 +1,34 @@
+# Fallback to hosting: `docker compose up`, then open http://localhost:7860
+# Requires demo/bundle (python demo/build_demo_snapshot.py) and a build context without data/
+# and tools/ (see demo/README.md, "Docker").
+services:
+  fuseki:
+    build: .
+    image: bizgraph-demo
+    command: ["fuseki"]
+    environment:
+      FUSEKI_XMX: 2g
+    volumes:
+      - fuseki-data:/data
+    ports:
+      - "3030:3030"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3030/$$/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  app:
+    image: bizgraph-demo
+    command: ["app"]
+    depends_on:
+      fuseki:
+        condition: service_healthy
+    environment:
+      FUSEKI_URL: http://fuseki:3030
+      # BIZGRAPH_MATCHER_VERSION: m-1465a4ba-e5444596
+    ports:
+      - "7860:7860"
+
+volumes:
+  fuseki-data:

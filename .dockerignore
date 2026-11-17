@@ -1,0 +1,10 @@
+# Keep the large local data, toolchain and venv out of the Docker build context.
+data/
+tools/
+.venv/
+fuseki/run*/
+outputs/
+tests/
+**/__pycache__/
+*.duckdb.wal
+demo/bundle/*.building*

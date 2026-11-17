@@ -13,6 +13,8 @@ All generators read three derived tables that `NameIndex.ensure` builds once fro
 * ``res_name_token(token, canonical_key)`` + ``res_token_df(token, df, idf)``: an
   inverted index on distinctive tokens, the full-text blocker (IDF-weighted token
   retrieval; no FTS extension needed, so it also works offline).
+* ``res_foreign_reg(canonical_key)``: parties that are the Australian registration of a
+  foreign body (ABR OIE, ASIC FNOS / RACN, ARBN): the only name targets a non-AU entity may have.
 * ``res_block_size(block_token, n)``: block sizes, so oversized blocks are skipped.
 * ``res_person_vocab(role, token, n)``: frequent given names / surnames of person parties
   (first / last token, 20+ parties), used to recognise person-shaped references.
@@ -59,10 +61,55 @@ class GeneratedCandidate:
 class NameIndex:
     """Builds and refreshes the derived resolution tables (see module docstring)."""
 
-    INDEX_VERSION = "v3"  # bump when the derived table definitions change
+    INDEX_VERSION = "v4"  # bump when the derived table definitions change
 
     def __init__(self, con: duckdb.DuckDBPyConnection) -> None:
         self.con = con
+
+    def _register_norms(self) -> None:
+        """Normalise every party name and alias with the CURRENT NameNormaliser.
+
+        `party_canonical.name_norm` comes from the ingest-time `source_record.name_norm`, so a
+        normaliser change would otherwise need a re-ingest of every Tier 1 record before the
+        index saw it. References are normalised with the current code; the index must agree.
+        """
+        import pyarrow as pa
+
+        from bizgraph.normalise.names import NameNormaliser
+
+        names = NameNormaliser()
+        keys: list[str] = []
+        raws: list[str] = []
+        kinds: list[str] = []
+        norms: list[str | None] = []
+        cur = self.con.cursor()
+        cur.execute(
+            """SELECT canonical_key, name, 'name', party_type FROM party_canonical WHERE name IS NOT NULL
+               UNION ALL
+               SELECT a.canonical_key, a.alias, a.alias_type, p.party_type FROM alias a
+               JOIN party_canonical p USING (canonical_key) WHERE a.alias IS NOT NULL"""
+        )
+        cache: dict[tuple[str, bool], str | None] = {}
+        while rows := cur.fetchmany(100_000):
+            for key, raw, kind, ptype in rows:
+                person = ptype == "person"
+                ck = (raw, person)
+                if ck not in cache:
+                    n = names.normalise_person(raw) if person else names.normalise(raw)
+                    cache[ck] = n.norm if n else None
+                keys.append(key)
+                raws.append(raw)
+                kinds.append(kind)
+                norms.append(cache[ck])
+            if len(cache) > 300_000:
+                cache.clear()
+        cur.close()
+        self.con.register("_res_norms", pa.table({
+            "canonical_key": pa.array(keys, pa.string()),
+            "name_raw": pa.array(raws, pa.string()),
+            "kind": pa.array(kinds, pa.string()),
+            "name_norm": pa.array(norms, pa.string()),
+        }))
 
     def _fingerprint(self) -> str:
         row = self.con.execute(
@@ -74,17 +121,28 @@ class NameIndex:
                       (SELECT coalesce(sum(hash(canonical_key, alias_norm)), 0) FROM alias) || ':' ||
                       (SELECT coalesce(sum(hash(canonical_key, scheme, value)), 0) FROM identifier)"""
         ).fetchall()
-        return f"{self.INDEX_VERSION}:{row[0][0]}"
+        import hashlib
+        from pathlib import Path
+
+        import bizgraph.normalise.names as names_mod
+
+        normaliser = hashlib.sha256(Path(names_mod.__file__).read_bytes()).hexdigest()[:12]
+        return f"{self.INDEX_VERSION}:{normaliser}:{row[0][0]}"
 
     def ensure(self, force: bool = False) -> dict[str, Any]:
         """Build the index unless it is current. Returns build stats (built False when skipped)."""
         con = self.con
-        con.execute("CREATE TABLE IF NOT EXISTS res_index_meta (fingerprint VARCHAR, built_at TIMESTAMP, build_s DOUBLE)")
         fp = self._fingerprint()
-        cur = con.execute("SELECT fingerprint FROM res_index_meta").fetchall()
-        if cur and cur[0][0] == fp and not force:
-            return {"built": False, "fingerprint": fp}
+        has_meta = con.execute(
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'res_index_meta'"
+        ).fetchall()[0][0]
+        if has_meta and not force:  # a current index needs no write (works on a read-only store)
+            cur = con.execute("SELECT fingerprint FROM res_index_meta").fetchall()
+            if cur and cur[0][0] == fp:
+                return {"built": False, "fingerprint": fp}
+        con.execute("CREATE TABLE IF NOT EXISTS res_index_meta (fingerprint VARCHAR, built_at TIMESTAMP, build_s DOUBLE)")
         t0 = time.perf_counter()
+        self._register_norms()
         generic = ", ".join(sql_lit(t) for t in sorted(GENERIC_TOKENS))
         con.execute(
             """CREATE OR REPLACE TABLE res_party_identifier AS
@@ -98,11 +156,8 @@ class NameIndex:
         con.execute(
             f"""CREATE OR REPLACE TABLE res_name_index AS
                 WITH names AS (
-                    SELECT canonical_key, name_norm, name AS name_raw, 'name' AS kind FROM party_canonical
-                    WHERE name_norm IS NOT NULL AND name_norm <> ''
-                    UNION
-                    SELECT canonical_key, alias_norm, alias, alias_type FROM alias
-                    WHERE alias_norm IS NOT NULL AND alias_norm <> ''),
+                    SELECT DISTINCT canonical_key, name_norm, name_raw, kind FROM _res_norms
+                    WHERE name_norm IS NOT NULL AND name_norm <> ''),
                 tok AS (
                     SELECT n.*, string_split(n.name_norm, ' ') AS toks FROM names n),
                 dist AS (
@@ -115,6 +170,23 @@ class NameIndex:
                        count(DISTINCT d.canonical_key) OVER (PARTITION BY d.name_norm) AS n_keys
                 FROM dist d JOIN party_canonical p USING (canonical_key)
                 ORDER BY block_token, d.canonical_key"""
+        )
+        # Australian registrations of foreign bodies: ABR "Other Incorporated Entity", ASIC type
+        # FNOS / RACN (also through the ASIC record of the party's ACN), or an ARBN.
+        has_asic = con.execute(
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'source_record'").fetchall()[0][0]
+        asic_foreign = (
+            """UNION SELECT p.canonical_key FROM party_canonical p
+               JOIN (SELECT DISTINCT record_id FROM source_record WHERE source = 'asic_company'
+                     AND payload->>'type' IN ('FNOS', 'RACN')) s ON s.record_id = p.acn"""
+            if has_asic else ""
+        )
+        con.execute(
+            f"""CREATE OR REPLACE TABLE res_foreign_reg AS
+                SELECT canonical_key FROM party_canonical
+                WHERE entity_type = 'OIE' OR asic_type IN ('FNOS', 'RACN')
+                UNION SELECT canonical_key FROM res_party_identifier WHERE scheme = 'arbn'
+                {asic_foreign}"""
         )
         con.execute(
             """CREATE OR REPLACE TABLE res_person_vocab AS
@@ -141,6 +213,7 @@ class NameIndex:
                SELECT token, count(*) AS df, ln(1 + (SELECT n FROM n) / count(*)) AS idf
                FROM res_name_token GROUP BY token"""
         )
+        con.unregister("_res_norms")
         build_s = time.perf_counter() - t0
         con.execute("DELETE FROM res_index_meta")
         con.execute("INSERT INTO res_index_meta VALUES (?, current_timestamp, ?)", [fp, build_s])

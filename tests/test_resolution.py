@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import date
 
@@ -89,8 +90,8 @@ def _norm(name: str, ptype: str) -> str:
     return n.norm
 
 
-def make_store() -> DuckDBStore:
-    s = DuckDBStore(":memory:")
+def make_store(path: str = ":memory:") -> DuckDBStore:
+    s = DuckDBStore(path)
     for key, ptype, name, abn, acn_, lei_, state, q in PARTIES:
         s.execute(
             """INSERT INTO party_canonical (canonical_key, party_type, name, name_norm, abn, acn, lei, state,
@@ -125,9 +126,10 @@ def matcher(store: DuckDBStore) -> Matcher:
 
 
 def ref(name: str, *, ids=(), ptype=PartyType.ORGANISATION, source="test_src", rid="r1", state=None,
-        lei_status=None) -> Reference:
+        lei_status=None, state_basis="register") -> Reference:
     norm = NAMES.normalise_person(name) if ptype is PartyType.PERSON else NAMES.normalise(name)
-    return Reference(name, norm, tuple(Identifier(s, v) for s, v in ids), ptype, state, source, rid, lei_status)
+    return Reference(name, norm, tuple(Identifier(s, v) for s, v in ids), ptype, state, source, rid, lei_status,
+                     state_basis=state_basis)
 
 
 # --------------------------------------------------------------------------- parser
@@ -268,9 +270,13 @@ def test_banned_org_stricter_threshold(matcher: Matcher) -> None:
 
 
 def test_stated_state_mismatch_penalty(matcher: Matcher) -> None:
-    d = matcher.match(ref("Acme Plumbing Pty Ltd", state="VIC", source="asic_afsl"))
+    # A state stated in free text that disagrees costs 0.15 ...
+    d = matcher.resolve("Acme Plumbing Pty Ltd, VIC")
     assert isinstance(d, Abstention) and d.reason is AbstainReason.BELOW_THRESHOLD
     assert d.best_score == 0.85
+    # ... register to register (different kinds of address) only 0.05.
+    d = matcher.match(ref("Acme Plumbing Pty Ltd", state="VIC", source="asic_afsl"))
+    assert isinstance(d, Link) and d.confidence == 0.95 and d.match_type is MatchType.NAME_FUZZY
 
 
 def test_unknown_type_gets_strict_floor() -> None:
@@ -309,8 +315,11 @@ def test_batch_persists_every_candidate_and_labels_never_mix(store: DuckDBStore,
     assert len(cand) == s.candidates and len(cand) > 8
     for c in cand:
         blob = json.loads(c["features"])
-        assert {"features", "scores", "query_text", "ref"} <= set(blob)
+        assert {"features", "scores", "query_text"} <= set(blob) and "ref" not in blob
         assert blob["query_text"].startswith("SELECT")
+    # the reference is stored once per record, not on every candidate row
+    n_ref = store.query("SELECT count(*) AS n FROM candidate_ref WHERE run_id = ?", [s.run_id])[0]["n"]
+    assert n_ref == s.records
     links = store.links.by_version(s.matcher_version)
     assert len(links) == s.links
     for lk in links:
@@ -362,15 +371,15 @@ def test_redecide_flips_without_regenerating(store: DuckDBStore, matcher: Matche
     monkeypatch.setattr(Matcher, "candidates", boom)
     monkeypatch.setattr(Matcher, "_batch_generate", boom)
 
-    # A looser policy that allows person name links: records 2 and 8 flip to links; the Blue Gum
+    # A looser policy that allows person name links: record 8 flips to a link; the Blue Gum
     # exact tie stays AMBIGUOUS even with a zero margin (ties never link).
     loose = ThresholdPolicy(default=0.80, min_margin=0.0, person_name_links=True)
     r = matcher.redecide(s.run_id, loose)
     assert r.matcher_version != s.matcher_version and r.matcher_version.startswith("mr-")
     assert store.query("SELECT count(*) AS n FROM candidate")[0]["n"] == before
     assert r.records == s.records
-    # record 2 (stated VIC vs WA party, 0.85) and record 8 (person name link now allowed) flip
-    assert r.diff == {"links_added": 2, "links_dropped": 0, "links_retargeted": 0, "links_unchanged": s.links}
+    # record 8 (person name link now allowed) flips; record 2 already links (register state penalty 0.05)
+    assert r.diff == {"links_added": 1, "links_dropped": 0, "links_retargeted": 0, "links_unchanged": s.links}
     flipped = {lk["record_id"]: lk for lk in store.links.by_version(r.matcher_version)}
     assert flipped["8"]["canonical_key"] == f"urn:abn:{SMITH_ABN}"
     assert {a["record_id"]: a["reason"] for a in store.abstentions.by_version(r.matcher_version)}["4"] == "AMBIGUOUS"
@@ -463,3 +472,186 @@ def test_trust_vs_company_and_formal_geo(matcher: Matcher) -> None:
     assert link_key(d) is None
     # ...while an informal reference may drop or add it.
     assert link_key(matcher.resolve("Commonwealth Bank")) == f"urn:abn:{CBA_ABN}"
+
+
+def test_redecide_rescores_from_stored_features(store: DuckDBStore, matcher: Matcher, monkeypatch) -> None:
+    from bizgraph.resolution import ScorerConfig
+
+    _load_source(store)
+    s = matcher.match_batch("test_src")
+    monkeypatch.setattr(_FE, "extract", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no re-match")))
+    # record 2 (stated VIC, party in WA; register-to-register penalty 0.05) links at 0.95;
+    # a harsher scorer config drops it without regenerating anything.
+    base = {lk["record_id"]: lk for lk in store.links.by_version(s.matcher_version)}
+    assert base["2"]["confidence"] == 0.95
+    r = matcher.redecide(s.run_id, matcher.policy, scorer_config=ScorerConfig(state_penalty_register=0.15))
+    after = {lk["record_id"] for lk in store.links.by_version(r.matcher_version)}
+    assert "2" not in after and r.diff["links_dropped"] == 1
+    mv = store.matcher_versions.get(r.matcher_version)
+    pol = json.loads(mv["policy"]) if isinstance(mv["policy"], str) else mv["policy"]
+    assert pol["config"]["scorer_config"]["state_penalty_register"] == 0.15 and pol["config"]["rescored"]
+    # without a scorer config the stored scores are reused: identical decisions
+    same = matcher.redecide(s.run_id, matcher.policy)
+    assert same.diff["links_added"] == 0 and same.diff["links_dropped"] == 0
+
+
+def test_cli_match_redecide_and_resolve_file(tmp_path, monkeypatch) -> None:
+    from bizgraph.cli import main
+
+    monkeypatch.setenv("BIZGRAPH_EMBEDDINGS", "0")
+    db = str(tmp_path / "t.duckdb")
+    s = make_store(db)
+    _load_source(s)
+    s.close()
+    assert main(["--db", db, "match", "test_src", "--version-label", "cli"]) == 0
+    s = DuckDBStore(db)
+    run = s.query("SELECT version FROM matcher_version WHERE version LIKE 'cli-%'")[0]["version"]
+    s.close()
+    assert main(["--db", db, "redecide", run, "--threshold", "0.8"]) == 0
+    src = tmp_path / "in.jsonl"
+    src.write_text(json.dumps({"id": "a", "text": "Commonwealth Bank of Aust, ABN 48 123 123 124"}) + "\n"
+                   + json.dumps({"reference_id": "b", "reference": "Nothing Like It Pty Ltd"}) + "\n",
+                   encoding="utf-8")
+    out = tmp_path / "out.jsonl"
+    assert main(["--db", db, "resolve-file", str(src), str(out)]) == 0
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert [r["reference_id"] for r in rows] == ["a", "b"]
+    assert rows[0]["decision"] == "resolved" and rows[0]["match_type"] == "EXACT_ABN"
+    assert rows[0]["candidates"][0]["canonical_key"] == f"urn:abn:{CBA_ABN}" and rows[0]["latency_ms"] > 0
+    assert rows[1]["decision"] == "abstained" and rows[1]["candidates"] == []
+
+
+# --------------------------------------------------------------------------- v3: evaluation census cases
+
+
+def _census_store() -> DuckDBStore:
+    """Parties shaped like the wrong v2 GLEIF links in outputs/evaluation.md section 3."""
+    s = DuckDBStore(":memory:")
+    rows = [
+        # key, party_type, name, entity_type, state, postcode, aliases
+        ("juno_wa", "organisation", "The Trustee for The Juno Trust", "DTT", "WA", "6000", []),
+        ("rio_ltd", "organisation", "RIO TINTO LIMITED", "PUB", "VIC", "3000", []),
+        ("bhp_fin", "organisation", "BHP BILLITON FINANCE LIMITED", "PUB", "VIC", "3000", []),
+        ("stanwell", "organisation", "STANWELL CORPORATION LIMITED", "PUB", "QLD", "4000", []),
+        ("haven", "organisation", "HAVEN LICENSING PTY. LIMITED", "PRV", "NSW", "2021",
+         [("TORO PTY. LIMITED", "former_name")]),
+        ("ccb", "organisation", "China Construction Bank Corporation", "OIE", "NSW", "2000", []),
+        ("browning_6023", "organisation", "THE BROWNING FAMILY SUPER FUND", "SMF", "WA", "6023", []),
+        ("arkad_tas", "organisation", "The Trustee for ARKAD TRUST", "DTT", "TAS", "7005", []),
+        ("solo", "person", "AFTABIGILVAN, VALI", "IND", "WA", "6000", []),
+        ("pzm", "organisation", "PZM LTD", "PUB", "NSW", "2027", [("PRISM MARKETS", "business_name")]),
+        ("wt_co", "organisation", "WT FINANCE CO PTY LTD", "PRV", "WA", "6000", []),
+        ("wt", "organisation", "WT FINANCE PTY LTD", "PRV", "WA", "6000", []),
+    ]
+    for i, (key, ptype, name, etype, state, pc, aliases) in enumerate(rows):
+        acn_ = acn(f"6{i:07d}")
+        abn = abn_for(acn_)
+        norm = NAMES.normalise_person(name) if ptype == "person" else NAMES.normalise(name)
+        s.execute(
+            """INSERT INTO party_canonical (canonical_key, party_type, name, name_norm, abn, acn, state, postcode,
+                                            entity_type, source, record_id, quarantined)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'abr', ?, false)""",
+            [key, ptype, name, norm.norm, abn, acn_, state, pc, etype, key],
+        )
+        s.execute("INSERT INTO identifier VALUES (?, 'abn', ?)", [key, abn])
+        for alias, kind in aliases:
+            s.execute("INSERT INTO alias VALUES (?, ?, ?, ?, 'abr', ?)", [key, alias, NAMES.normalise(alias).norm, kind, key])
+    return s
+
+
+def _gleif(name: str, jurisdiction: str, *, state=None, postcode=None, ids=(), basis="gleif_entity_category",
+           ptype=PartyType.ORGANISATION) -> Reference:
+    payload = {"legal_jurisdiction": jurisdiction, "state": state, "party_type_basis": basis,
+               "legal_address": {"country": jurisdiction[:2], "postalcode": postcode}}
+    rec = SourceRecord("gleif_l1", name, date(2026, 11, 16), payload, name, party_type=ptype,
+                       identifiers=tuple(ids))
+    return Reference.from_record(rec)
+
+
+@pytest.fixture()
+def census() -> Matcher:
+    return Matcher(_census_store())
+
+
+@pytest.mark.parametrize("name,jur", [
+    ("THE JUNO TRUST", "NZ"),  # NZ trust vs WA trust of the same name
+    ("RIO TINTO PLC", "GB"),  # UK plc vs the Australian company of the dual-listed group
+    ("BHP BILLITON FINANCE PLC", "GB"),
+    ("Stanwell Limited", "NZ"),
+    ("THE TORO COMPANY", "US-DE"),  # matched through a former name of another company in v2
+])
+def test_foreign_entity_never_links_to_australian_company(census: Matcher, name: str, jur: str) -> None:
+    d = census.match(_gleif(name, jur))
+    assert link_key(d) is None, d.explanation
+
+
+def test_jurisdiction_mismatch_reason_and_foreign_registration(census: Matcher) -> None:
+    d = census.match(_gleif("THE JUNO TRUST", "NZ"))
+    assert isinstance(d, Abstention) and d.reason is AbstainReason.JURISDICTION_MISMATCH
+    juno = next(r for r in d.ranked if r.canonical_key == "juno_wa")
+    assert juno.features["jurisdiction_conflict"] and juno.features["ref_jurisdiction"] == "NZ"
+    # A foreign bank's Australian registration (ABR 'Other Incorporated Entity') is a legal target.
+    d = census.match(_gleif("China Construction Bank Corporation", "CN"))
+    assert link_key(d) == "ccb"
+
+
+def test_trust_and_super_fund_need_postcode_and_state(census: Matcher) -> None:
+    d = census.match(_gleif("THE BROWNING FAMILY SUPER FUND", "AU", state="WA", postcode="6210"))
+    assert link_key(d) is None  # same name, other postcode: a different SMSF
+    b = next(r for r in d.ranked if r.canonical_key == "browning_6023")
+    assert b.features["postcode_match"] is False and "postcode" in b.veto
+    d = census.match(_gleif("Jota Investments Pty Ltd ATF the Arkad Trust", "AU", state="SA", postcode="5081"))
+    assert link_key(d) is None  # SA trust vs the TAS trust of the same name
+
+
+def test_stated_abn_beats_a_gleif_type_hint(census: Matcher) -> None:
+    solo_abn = census.store.query("SELECT abn FROM party_canonical WHERE canonical_key = 'solo'")[0]["abn"]
+    d = census.match(_gleif("Vali Aftabigilvan", "AU", ids=[Identifier(IdScheme.ABN, solo_abn)]))
+    assert isinstance(d, Link) and d.match_type is MatchType.EXACT_ABN and d.canonical_key == "solo"
+    assert "type hint" in d.evidence.disagreement
+    # A register fact (not a hint) still conflicts.
+    r = dataclasses.replace(_gleif("Vali Aftabigilvan", "AU", ids=[Identifier(IdScheme.ABN, solo_abn)]),
+                            party_type_basis="has_acn")
+    d = census.match(r)
+    assert isinstance(d, Abstention) and d.reason is AbstainReason.PARTY_TYPE_CONFLICT
+
+
+def test_formal_name_never_matches_a_business_name_exactly(census: Matcher) -> None:
+    d = census.match(_gleif("Prism Markets Limited", "AU"))
+    assert link_key(d) is None
+    pzm = next(r for r in d.ranked if r.canonical_key == "pzm")
+    assert pzm.features["compared_name_kind"] == "business_name" and not pzm.eligible
+
+
+def test_weak_legal_form_words_kept_when_the_name_would_collapse(census: Matcher) -> None:
+    assert NAMES.normalise("WT FINANCE CO").norm == "WT FINANCE CO"
+    assert NAMES.normalise("SIMPLY CORPORATION").norm == "SIMPLY CORPORATION"
+    assert NAMES.normalise("WESTPAC BANKING CORPORATION").norm == "WESTPAC BANKING"
+    assert link_key(census.resolve("WT Finance Pty Ltd")) == "wt"
+    assert link_key(census.resolve("WT Finance Co Pty Ltd")) == "wt_co"
+
+
+def test_register_names_have_no_typo_tolerance_and_keep_inner_corporation() -> None:
+    # 'SUNRISE MEDICAL' from a register is not 'SUNRISE MEDIA' (JW 0.94 would call it a typo).
+    s = DuckDBStore(":memory:")
+    for key, name in (("media", "SUNRISE MEDIA PTY LTD"), ("garnet", "AUSTRALIAN GARNET PTY LTD")):
+        s.execute("INSERT INTO party_canonical (canonical_key, party_type, name, name_norm, source, record_id) "
+                  "VALUES (?, 'organisation', ?, ?, 'abr', ?)", [key, name, NAMES.normalise(name).norm, key])
+    m = Matcher(s)
+    assert link_key(m.match(_gleif("Sunrise Medical Pty. Ltd", "AU"))) is None
+    assert link_key(m.resolve("Sunrise Medai Pty Ltd")) == "media"  # free text keeps typo tolerance
+    assert NAMES.normalise("Australian Garnet Corporation Pty Ltd").norm == "AUSTRALIAN GARNET CORPORATION"
+    assert NAMES.normalise("JONES & CO PTY LTD").norm == "JONES AND CO"
+    assert link_key(m.match(_gleif("Australian Garnet Corporation Pty Ltd", "AU"))) is None
+
+
+def test_index_renormalises_stale_party_norms() -> None:
+    # party_canonical.name_norm written by an older normaliser ('WT FINANCE' for WT FINANCE CO PTY LTD):
+    # the index normalises names itself, so references and parties agree.
+    s = DuckDBStore(":memory:")
+    s.execute("INSERT INTO party_canonical (canonical_key, party_type, name, name_norm, source, record_id) "
+              "VALUES ('wt_co', 'organisation', 'WT FINANCE CO PTY LTD', 'WT FINANCE', 'abr', 'x')")
+    m = Matcher(s)
+    assert s.query("SELECT name_norm FROM res_name_index")[0]["name_norm"] == "WT FINANCE CO"
+    assert link_key(m.resolve("WT Finance Co Pty Ltd")) == "wt_co"
+    assert link_key(m.resolve("WT Finance Pty Ltd")) is None

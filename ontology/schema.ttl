@@ -1012,6 +1012,8 @@ bg:PARTY_TYPE_CONFLICT a bg:AbstainReason, skos:Concept ; skos:inScheme bg:Absta
     skos:definition "Record is a person and the candidate an organisation, or the reverse."@en .
 bg:QUARANTINED_TARGET a bg:AbstainReason, skos:Concept ; skos:inScheme bg:AbstainReasonScheme ; skos:notation "QUARANTINED_TARGET" ;
     skos:definition "The only candidate carries a quarantined identifier (e.g. an ACN under two names)."@en .
+bg:JURISDICTION_MISMATCH a bg:AbstainReason, skos:Concept ; skos:inScheme bg:AbstainReasonScheme ; skos:notation "JURISDICTION_MISMATCH" ;
+    skos:definition "A non-Australian legal entity (by GLEIF bg:legalJurisdiction) whose only name match is an Australian-incorporated party rather than that entity's own Australian registration as a foreign body (ARBN). Same name, different legal person: abstain."@en .
 
 bg:LicenceKind a owl:Class ;
     rdfs:label "Licence kind"@en ;

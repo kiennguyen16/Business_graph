@@ -1,25 +1,163 @@
-# Resolution run, 2026-11-17 (draft)
+# Resolution run, 2026-11-17 / 18 (draft)
 
-Store: `data/bizgraph.duckdb` (1,075,216 canonical parties: 580,501 organisations, 494,715 persons;
-1,331,833 identifier rows; 575,572 aliases; 69 quarantine rows). Engine: `src/bizgraph/resolution/`.
-DuckDB `memory_limit='5GB'`, `threads=4`; embeddings `sentence-transformers/all-MiniLM-L6-v2` on CPU,
-loaded once per process and computed only where the semantic path may apply. All numbers below are
-**measured** on this machine unless marked otherwise. Draft for the evaluation agent: precision here
-is against identifier ground truth or eyeballed, not against hand labels.
+Store: `data/bizgraph.duckdb`. Engine: `src/bizgraph/resolution/`. DuckDB `memory_limit='5GB'`,
+`threads=4`; embeddings `sentence-transformers/all-MiniLM-L6-v2` on CPU, loaded once per process and
+computed only where the semantic path may apply. All numbers are **measured** on this machine unless
+marked otherwise.
 
-Two matcher versions are kept side by side in the store:
+Three matcher versions are kept side by side in the store:
 
-| | v1 (baseline) | v2 (current) |
+| | v1 (baseline) | v2 | v3 (current) |
+|---|---|---|---|
+| matcher_version | `m-dabec5ea-d900271d` | `m-1465a4ba-e5444596` | `m-94f4f6b2-d37e44c6` |
+| What changed | first full-scale run | fixes after an adversarial test suite (section 5) | evaluation-driven gates (jurisdiction, trust postcode / state, stated ABN over a type hint, normaliser), data refresh, state penalty by basis, scorer config in the version, reference stored once per record |
+| Needed | | re-match (new features and scorers) | re-match (new features and new data) |
+| Labelled precision (242 labels on v2's sample) | | 74.3% (127 of 171 decided links; 44 wrong) | **100% (123 of 123; 0 wrong)** |
+
+Reprocess economics in one line: a change of **policy or scorer weights** is a `redecide` over stored
+candidates (GLEIF, 405k candidates, full rescore: 35 s; AFSL name-only, 157k candidates: 12 to 16 s);
+a change of **features, gates that read new inputs, or data** is a re-match (GLEIF: 132 s). v2 and v3
+both changed features, so both were re-matched; v3 stores its gate inputs in the candidate features so
+the next gate change can be replayed by `redecide`.
+
+## 0. v3 (current)
+
+### What changed since v2
+
+Evaluation-driven gates (`outputs/evaluation.md` sections 3 and N7; every case is a regression test in
+`tests/test_resolution.py`):
+
+1. **Jurisdiction gate (R3b).** A GLEIF reference whose legal jurisdiction is not AU may match on name
+   only a party that is the Australian registration of a foreign body (ABR "Other Incorporated Entity",
+   ASIC FNOS / RACN, ARBN; table `res_foreign_reg`). Any other name candidate is vetoed; if the veto
+   blocked a candidate that would otherwise have linked, the reason is the new
+   `AbstainReason.JURISDICTION_MISMATCH` (added to `bizgraph.domain.models`; needs the ontology
+   concept). This removes the NZ trust to WA / TAS trust class, RIO TINTO PLC to RIO TINTO LIMITED, BHP
+   Billiton Finance plc, Stanwell (NZ), The Toro Company, and keeps the foreign banks registered here.
+2. **Trusts and super funds (R5h).** When either side is a trust or super fund (name, "trustee for", or
+   ABR entity type), differing postcodes make the candidate ineligible, and a stated state that differs
+   is a veto rather than a penalty (Browning Family Super 6210 vs 6023; Arkad Trust SA vs TAS).
+3. **A stated ABN beats a type hint (R1c).** When the ABN matches and the reference's party type is only
+   a hint (GLEIF entity category, SOLE_PROPRIETOR, or unknown), link EXACT_ABN and record the type
+   disagreement in `evidence.disagreement`. 41 GLEIF records move from PARTY_TYPE_CONFLICT to EXACT_ABN.
+4. **R5f covers NAME_NORMALISED_EXACT** (it already did; Toro matched through a *former* name of another
+   company, now stopped by the jurisdiction gate; Prism Global Group Plc through a business name).
+5. **Normaliser** (`normalise/names.py`): CO / COMPANY / CORP / CORPORATION are stripped only when a
+   distinctive name of two or more tokens remains (`WT FINANCE CO` stays, `SIMPLY CORPORATION` stays,
+   `WESTPAC BANKING CORPORATION` becomes `WESTPAC BANKING`), and a second legal form is stripped only for
+   `... & CO PTY LTD`. The resolution index now normalises every party name and alias itself, because
+   `party_canonical.name_norm` is the ingest-time value; a normaliser change no longer needs a Tier 1
+   re-ingest to reach the matcher.
+6. **Register names have no typo tolerance.** Found while checking the first v3 build: `Sunrise Medical
+   Pty. Ltd` (GLEIF) linked SUNRISE MEDIA PTY LTD because MEDICAL / MEDIA pass the 0.93 Jaro-Winkler typo
+   rule. Names read from a register (GLEIF, ASIC registers) now align tokens exactly; free text keeps
+   the typo tolerance (`Comonwealth Bank`).
+7. **Gate inputs stored in the candidate features**: `ref_jurisdiction`, `candidate_foreign_registration`,
+   `jurisdiction_conflict`, `ref_postcode`, `candidate_postcode`, `postcode_match`, `trust_like`,
+   `candidate_entity_type`, `party_type_basis`, `compared_name_kind`, `state_basis`.
+
+Also in v3:
+
+* **Data refresh.** New GLEIF L1 slice (59,659 entities) and L2 (370 new relationships). AFSL and credit
+  histories: 6 archived AFSL captures (2025-04-14 to 2026-11-10) and 2 credit captures. The current
+  files had been stored as 2026-11-09, before the 2026-11-10 capture, so both sources were rebuilt from
+  the raw files in date order with the current files at their CKAN last_modified dates (AFSL
+  2026-11-11, credit 2026-11-15; `outputs/sources.md`). AFSL holds 6,949 licences (13,758 versions),
+  credit 4,606 (4,965 versions). `licence_event`: 2,532 events (AFSL 480 granted, 399 cancelled or
+  lapsed, 246 renamed, 902 authorisation changed, 1 reappeared; credit 137 granted, 298 cancelled or
+  lapsed, 48 renamed, 16 authorisation changed, 5 status changed; no HOLDER_CHANGED). Canonical
+  rebuild: 1,075,667 parties, 42 quarantined. The ABR slice was not re-ingested against the new Tier 2
+  references (recall cost; see section 6).
+* **State penalty by basis.** -0.15 when a free-text reference states a state and the party is
+  elsewhere; -0.05 register to register (a GLEIF legal address and an ABR main business location mean
+  different things). Trusts and funds: veto, item 2.
+* **Scorer config in the version, rescoring redecide**, **reference stored once per record**
+  (`candidate_ref`), **CLI** (`bizgraph match | match-all | redecide | resolve | resolve-file |
+  licence-events`) and **`scripts/run_pipeline.sh`** (all steps, per-step timing in `data/logs/`).
+
+### Precision on the evaluation labels
+
+The evaluation agent's 242 labels (`labels/labels_m-1465a4ba-e5444596.csv`) re-scored mechanically
+against v3 (the evaluation agent will re-score independently):
+
+| | v2 | v3 |
 |---|---|---|
-| matcher_version | `m-dabec5ea-d900271d` | `m-1465a4ba-e5444596` |
-| What changed | first full-scale run | fixes after an independent adversarial test suite (below) |
-| Name-only / redecide / latency measured | no (v1 code no longer exists) | yes |
+| Links on labelled records | 182 | 126 |
+| Correct / wrong (UNSURE excluded) | 127 / 44 | 123 / 0 |
+| Precision | 74.3% | **100%** |
+| Labelled records with a true party in the graph but abstained | 7 | 12 |
+| GLEIF name links of the census (v2 linked 91 labelled records on name, 75 of them decided) | 37 correct, 44 wrong | 29 correct, **0 wrong**, 60 abstain (2 still linked are UNSURE) |
 
-Earlier interim v2 builds were run and deleted (their numbers are not reported). v2 required a full
-re-match, not a redecide: it changes **features** (new token features) and **scorers**, and only
-policy changes can be replayed from stored candidates. That is the reprocess-economics data point:
-GLEIF (59,606 records) re-matched in 135 s, while a policy change over 147k stored AFSL candidates
-re-decides in 10 s without touching candidate generation or features.
+The extra misses are the price: correct foreign-registration links lost where the GLEIF record is an
+Australian company registered abroad (the 4 the evaluation predicted), and AU trusts whose postcode
+differs between GLEIF and ABR.
+
+### Batch results (v3)
+
+| Source | Records | Links v1 / v2 / v3 | v3 links by match_type | v3 abstentions | Candidates | Wall-clock | Records/s |
+|---|---|---|---|---|---|---|---|
+| asic_afsl | 6,949 (incl. ended licences) | 6,522 / 6,519 / 6,872 | EXACT_ABN 6,688; EXACT_ACN 184 | BELOW_THRESHOLD 69; NO_CANDIDATE 5; PARTY_TYPE_CONFLICT 2; IDENTIFIER_CONFLICT 1 | 15,626 | 4.9 s | 1,419 |
+| asic_credit | 4,606 | 4,235 / 4,234 / 4,464 | EXACT_ABN 4,057; EXACT_ACN 407 | BELOW_THRESHOLD 132; NO_CANDIDATE 10 | 12,460 | 3.9 s | 1,176 |
+| asic_banned_org | 15 | 12 / 12 / 12 | EXACT_ACN 12 | BELOW_THRESHOLD 3 | 106 | 0.4 s | 40 |
+| asic_liquidator | 660 | 0 / 0 / 0 | none (persons) | BELOW_THRESHOLD 657; NO_CANDIDATE 2; PARTY_TYPE_CONFLICT 1 | 17,091 | 4.8 s | 136 |
+| gleif_l1 | 59,659 | 48,862 / 48,179 / 48,134 | EXACT_ACN 33,809; EXACT_ABN 14,158; NAME_NORMALISED_EXACT 143; NAME_FUZZY 24 | BELOW_THRESHOLD 10,510; NO_CANDIDATE 926; JURISDICTION_MISMATCH 84; IDENTIFIER_CONFLICT 3; AMBIGUOUS 2 | 405,081 | 131.8 s | 453 |
+| accc_notice | 20 | 7 / 7 / 7 | EXACT_ACN 7 | BELOW_THRESHOLD 10; NO_CANDIDATE 3 | 341 | 0.5 s | 42 |
+
+Peak process memory 3.4 GB (GLEIF). Start-up 62 s (index rebuild with Python re-normalisation of
+1.65M names and aliases: 31 s; cached afterwards). Identifier links never retargeted between versions.
+
+* v2 to v3: AFSL +353 and credit +231 identifier links (licences present only in the history files),
+  credit -1; GLEIF +62 (41 EXACT_ABN from item 3, 20 NAME_FUZZY, 1 NAME_NORMALISED_EXACT) and -107
+  (jurisdiction, trust postcode / state, register typo gate).
+* **Ended licences**: every licence that ever appeared has a decision (matching reads the latest
+  version of each licence, including licences absent from the current file). CANCELLED_OR_LAPSED
+  licences: AFSL 399, of which 354 linked; credit 298, of which 231 linked; the rest abstain (mostly
+  holders outside the ABR slice). All licences with any event: AFSL 1,641 (1,591 linked, 50 abstained),
+  credit 498 (430 linked, 68 abstained). No HOLDER_CHANGED events, so the latest version's holder is
+  the holder of every version.
+* **ACCC**: identical to v1 and v2 (7 EXACT_ACN links, 13 abstentions; table in section 2).
+
+### Candidate storage
+
+| Version | Candidate rows | candidate.features JSON | candidate_ref | Bytes per candidate |
+|---|---|---|---|---|
+| v2 | 444,953 | 711.3 MB | none (reference repeated on every row) | 1,598 |
+| v3 | 450,705 | 684.8 MB | 71,909 rows, 34.2 MB | 1,595 |
+
+Moving the reference out saved about 1 KB per record but the v3 feature vector gained 11 gate inputs, so
+bytes per candidate are flat. Next: store non-default features only and the query text once per
+(record, path).
+
+### Recalibration with rescoring (no re-match)
+
+`redecide(v3, policy, source_id="gleif_l1", scorer_config=ScorerConfig(state_penalty_register=0.15))`
+(v2's register-state penalty replayed on v3's stored features) read 405,081 candidates, rescored and
+re-decided them in **35.1 s** (load 17.7 s, decide 11.7 s), dropping 9 name links, with no candidate
+generation or feature extraction. Version `mr-94f4f6b2-f3b4d9f4` records the scorer config and
+`rescored: true`.
+
+### Name-only precision and recall (v3, identifiers stripped)
+
+| Source | Truth (EXACT_ABN links) | Blocking recall | Name links on truth | Wrong | Precision | Recall (0.85, 0.90, 0.95 identical) |
+|---|---|---|---|---|---|---|
+| asic_afsl | 6,688 | 99.96% | 6,485 | 0 | 100% | 97.0% |
+| asic_credit | 4,057 | 99.8% | 3,603 | 0 | 100% | 88.8% |
+
+Redecide per threshold: 12.1 to 15.7 s (AFSL, 156,895 candidates), 7.5 to 8.5 s (credit, 103,775).
+The threshold no longer moves anything in this range: after the gates the name scores are bimodal.
+
+### resolve() latency (v3, warm)
+
+Same 200-string recipe as v2 (28 with an ABN): p50 188 ms, p95 224 ms, max 241 ms. Outcomes: 139
+NAME_NORMALISED_EXACT, 27 EXACT_ABN, 1 NAME_FUZZY, 28 BELOW_THRESHOLD, 5 AMBIGUOUS. Named cases
+unchanged (CBA by name and by ABN, CSC by name). `bizgraph resolve-file in.jsonl out.jsonl` writes the
+`outputs/resolve_results.jsonl` row format (reference id, ordered candidates with canonical key, score,
+match type, evidence and path, decision resolved / abstained, latency); candidates that failed a gate
+are counted, not listed, so a reference that is not in the graph gets an empty list.
+
+---
+
+The sections below are the v1 / v2 record (2026-11-17).
 
 ## 1. Batch results per source
 
@@ -211,15 +349,25 @@ Changes from v1 to v2 (all in `src/bizgraph/resolution/`; rules are written in `
 9. Store: `abstention.evidence JSON` added (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`); every
    abstention now carries its explanation and the best candidate's features.
 
-## 6. Known costs and next steps
+v3 status: the adversarial suite still passes 94 / 94 (recall sanity: precision 100%, resolvable
+recall 99.7%); `tests/test_resolution.py` 38 passed, including one regression test per evaluation case
+(foreign entity to Australian company, NZ trust, foreign bank allowed, Browning postcode, Arkad state,
+stated ABN over a GLEIF type hint, business-name alias, CO / CORPORATION normalisation, register typo,
+stale `name_norm`), the CLI (`match`, `redecide`, `resolve-file`) and rescoring redecide. The full
+`tests/` run (without Fuseki) passes: 476 passed, 4 skipped.
 
-* Stated-state penalty on register data: GLEIF's state (legal address) and ABR's state (main business
-  location) differ for some trusts, which now drop to 0.85 (65 of the lost v1 links, several correct).
-  Using 0.15 only for a user-stated state and a smaller penalty for register-derived states would win
-  them back. Because scores are stored, not recomputed, this needs a re-match today; recomputing
-  scores from stored features inside `redecide` would make scorer changes as cheap as policy changes.
-* Candidate JSON repeats the reference block per row (about 1.6 KB per candidate); store the reference
-  once per record.
+## 6. Known costs and next steps (after v3)
+
+* ABR slice not refreshed against the new Tier 2 references (GLEIF refresh, licence history): those
+  ABNs resolve only if ABR already had them. Re-ingesting ABR with `--tier2-allowlist` closes it.
+* `party_canonical.name_norm` is the ingest-time normalisation; the resolution index re-normalises, but
+  other consumers of `name_norm` see the old form until Tier 1 is re-ingested with `--force`.
+* Australian companies registered abroad (NZ overseas registrations of a Pty Ltd) now abstain under
+  the jurisdiction gate; corroborating them via the LEI's registration number or ASIC former names is
+  the safe way to win them back.
+* Candidate JSON is about 1.6 KB per candidate: store non-default features and the query text once per
+  (record, path).
 * Identifier-matched records only probe name equality for disagreements, not full blocking (cost
   saving); a fuzzy rival to an identifier link is therefore not seen in batch.
-* Exact path unaffected by any of this: 100% of v2 identifier links equal v1.
+* Exact path: identifier links identical across v1, v2 and v3 (plus 41 stated-ABN links in v3 that v2
+  refused on a type hint).

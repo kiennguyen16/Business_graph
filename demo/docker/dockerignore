@@ -1,0 +1,11 @@
+# Copy to the repo root as .dockerignore (or Dockerfile.dockerignore) before `docker build .`
+# so the 10 GB data/ directory and the local JDK / Jena binaries stay out of the build context.
+data/
+tools/
+.venv/
+fuseki/run*/
+outputs/
+tests/
+**/__pycache__/
+*.duckdb.wal
+demo/bundle/*.building*

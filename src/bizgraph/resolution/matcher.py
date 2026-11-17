@@ -38,13 +38,12 @@ from bizgraph.resolution.candidates import (
     TokenStateBlocker,
 )
 from bizgraph.resolution.decision import (
-    DEFAULT_SCORERS,
     PATH_EXACT_ID,
     PATH_NAME_EXACT,
     Abstention,
     Decision,
     Link,
-    Scorer,
+    ScorerConfig,
     StoredCandidate,
     ThresholdPolicy,
     arbitrate,
@@ -153,8 +152,9 @@ class Matcher:
         embedder: Embedder | None | str = None,
         k: int = 20,
         use_embedding_blocker: bool = False,
-        scorers: tuple[Scorer, ...] = DEFAULT_SCORERS,
+        scorer_config: ScorerConfig | None = None,
         normaliser: NameNormaliser | None = None,
+        version_label: str = "m",
     ) -> None:
         """embedder: an `Embedder`, None (no semantic path), or "auto" (load if installed)."""
         self.store = store
@@ -166,7 +166,8 @@ class Matcher:
         # Embeddings are filled in afterwards, in one batch, and only where the semantic path
         # can apply (see _embed), so the extractor itself runs without the model.
         self.extractor = FeatureExtractor(self.names, None)
-        self.scorers = scorers
+        self.scorer_config = scorer_config or ScorerConfig()
+        self.scorers = self.scorer_config.scorers()
         self.exact = ExactIdentifierGenerator()
         blockers = [TokenStateBlocker(k), FtsBlocker(k)]
         if use_embedding_blocker and self.embedder is not None:
@@ -176,10 +177,11 @@ class Matcher:
         self.given_names, self.surnames = self._person_vocab()
         config = {
             "blockers": self.blocking.describe(),
-            "scorers": [s.name for s in scorers],
+            "scorers": [s.name for s in self.scorers],
+            "scorer_config": self.scorer_config.to_dict(),
             "embedding_model": self.embedder.model_name if self.embedder else None,
         }
-        self.version = MatcherVersion.create(self.policy, config)
+        self.version = MatcherVersion.create(self.policy, config, prefix=version_label)
 
     # ------------------------------------------------------------------ references
 
@@ -208,8 +210,10 @@ class Matcher:
         try:
             parties = con.execute(
                 """SELECT p.canonical_key, p.party_type, p.name, p.name_norm, upper(p.state),
-                          coalesce(p.quarantined, false)
-                   FROM party_canonical p JOIN _res_keys k USING (canonical_key)"""
+                          coalesce(p.quarantined, false), p.postcode, coalesce(p.entity_type, p.asic_type),
+                          f.canonical_key IS NOT NULL
+                   FROM party_canonical p JOIN _res_keys k USING (canonical_key)
+                   LEFT JOIN res_foreign_reg f USING (canonical_key)"""
             ).fetchall()
             ids = con.execute(
                 """SELECT i.canonical_key, i.scheme, i.value FROM res_party_identifier i
@@ -236,7 +240,7 @@ class Matcher:
             name_map[key].append((norm, kind))
             raw_map[key].setdefault(norm, raw)
         out = {}
-        for key, ptype, name, norm, state, q in parties:
+        for key, ptype, name, norm, state, q, postcode, etype, foreign in parties:
             out[key] = PartyView(
                 canonical_key=key,
                 party_type=ptype,
@@ -247,6 +251,9 @@ class Matcher:
                 identifiers={s: frozenset(v) for s, v in id_map[key].items()},
                 names=tuple(name_map[key]),
                 name_raw_by_norm=raw_map[key],
+                postcode=postcode,
+                entity_type=etype,
+                foreign_registration=bool(foreign),
             )
         return out
 
@@ -487,6 +494,7 @@ class Matcher:
         con.execute("BEGIN TRANSACTION")
         try:
             con.execute("DELETE FROM candidate WHERE run_id = ? AND source = ?", [run_id, source_id])
+            con.execute("DELETE FROM candidate_ref WHERE run_id = ? AND source = ?", [run_id, source_id])
             self._delete_decisions(version.version, source_id)
             for start in range(0, len(refs), self.SCORE_CHUNK):
                 chunk = refs[start:start + self.SCORE_CHUNK]
@@ -518,6 +526,7 @@ class Matcher:
 
                 t0 = time.perf_counter()
                 summary.candidates += self.store.candidates.save_many(cand_rows)
+                self._save_refs(run_id, [(ref, self.ref_info(ref)) for ref, _ in scored])
                 self._insert_decisions(version.version, decisions)
                 timings["persist"] += time.perf_counter() - t0
                 self._tally(summary, decisions)
@@ -529,6 +538,22 @@ class Matcher:
         timings["total"] = time.perf_counter() - t_start
         summary.timings_s = {k: round(v, 3) for k, v in timings.items()}
         return summary
+
+    def _save_refs(self, run_id: str, refs: list[tuple[Reference, dict[str, Any]]]) -> None:
+        """One `candidate_ref` row per reference (also those with no candidate)."""
+        if not refs:
+            return
+        self.con.register("_res_cref", pa.table({
+            "run_id": [run_id] * len(refs),
+            "source": [r.source for r, _ in refs],
+            "record_id": [r.record_id for r, _ in refs],
+            "ref": [_jdump(info) for _, info in refs],
+        }))
+        try:
+            self.con.execute("INSERT OR REPLACE INTO candidate_ref SELECT run_id, source, record_id, ref::JSON "
+                             "FROM _res_cref")
+        finally:
+            self.con.unregister("_res_cref")
 
     @staticmethod
     def _candidate_rows(run_id: str, ref: Reference, info: dict[str, Any], c: StoredCandidate) -> list[dict[str, Any]]:
@@ -545,7 +570,6 @@ class Matcher:
                     "features": c.features.as_dict(),
                     "scores": c.scores,
                     "query_text": c.query_text[path],
-                    "ref": info,
                 },
                 "score": best,
             })
@@ -621,12 +645,21 @@ class Matcher:
 
     # ------------------------------------------------------------------ recalibration
 
-    def redecide(self, run_id: str, policy: ThresholdPolicy, source_id: str | None = None) -> RunSummary:
-        """Re-apply `policy` to the stored candidates of `run_id`. No candidate generation,
-        no feature extraction, no scoring: features and scores are read back from `candidate`.
+    def redecide(
+        self,
+        run_id: str,
+        policy: ThresholdPolicy,
+        source_id: str | None = None,
+        scorer_config: ScorerConfig | None = None,
+    ) -> RunSummary:
+        """Re-apply `policy` to the stored candidates of `run_id`. No candidate generation and
+        no feature extraction: features are read back from `candidate`.
 
-        Writes a new matcher version (prefix 'mr-', candidates_run_id = run_id) and returns
-        a summary with a diff against the run's own decisions.
+        Scores are the stored ones, unless `scorer_config` is given: then they are recomputed
+        from the stored features with the new weights and penalties, so a scorer change is as
+        cheap as a policy change (only a new FEATURE needs a re-match). Writes a new matcher
+        version (prefix 'mr-', candidates_run_id = run_id, config records the scorer config)
+        and returns a summary with a diff against the run's own decisions.
         """
         t_start = time.perf_counter()
         con = self.con
@@ -634,7 +667,13 @@ class Matcher:
         if base is None:
             raise ValueError(f"unknown run {run_id!r}")
         base_policy = base["policy"] if isinstance(base["policy"], dict) else json.loads(base["policy"])
-        mv = MatcherVersion.create(policy, base_policy.get("config", {}), candidates_run_id=run_id)
+        config = dict(base_policy.get("config", {}))
+        rescorers = None
+        if scorer_config is not None:
+            config["scorer_config"] = scorer_config.to_dict()
+            config["rescored"] = True
+            rescorers = scorer_config.scorers()
+        mv = MatcherVersion.create(policy, config, candidates_run_id=run_id)
         mv.save(self.store)
 
         where, params = "WHERE run_id = ?", [run_id]
@@ -647,15 +686,22 @@ class Matcher:
             "ORDER BY source, record_id, canonical_key, path",
             params,
         ).fetchall()
-        grouped: dict[tuple[str, str], dict[str, StoredCandidate]] = defaultdict(dict)
         infos: dict[tuple[str, str], dict[str, Any]] = {}
+        for source, record_id, blob in con.execute(
+            f"SELECT source, record_id, ref FROM candidate_ref {where}", params
+        ).fetchall():
+            infos[(source, record_id)] = json.loads(blob) if isinstance(blob, str) else blob
+        grouped: dict[tuple[str, str], dict[str, StoredCandidate]] = defaultdict(dict)
         for source, record_id, key, path, blob in rows:
             payload = json.loads(blob) if isinstance(blob, str) else blob
             rk = (source, record_id)
-            infos.setdefault(rk, payload.get("ref") or {"source": source, "record_id": record_id})
+            if rk not in infos:  # runs written before candidate_ref kept the reference per row
+                infos[rk] = payload.get("ref") or {"source": source, "record_id": record_id}
             c = grouped[rk].get(key)
             if c is None:
-                c = StoredCandidate(key, [], {}, FeatureVector.from_dict(payload["features"]), payload["scores"])
+                fv = FeatureVector.from_dict(payload["features"])
+                scores = score_all(fv, rescorers) if rescorers else payload["scores"]
+                c = StoredCandidate(key, [], {}, fv, scores)
                 grouped[rk][key] = c
             c.paths.append(path)
             c.query_text[path] = payload.get("query_text", "")

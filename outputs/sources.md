@@ -15,7 +15,7 @@ published terms, not legal advice.
 | ASIC banned and disqualified organisations | 2 | CC BY 3.0 AU | Yes, with attribution | Yes (`asic_banned_org`) |
 | ASIC liquidator | 2 | CC BY 3.0 AU | Yes, with attribution | Yes (`asic_liquidator`) |
 | GLEIF golden copy L1 + L2 | 2 | CC0 1.0 | Yes | Yes (`gleif_l1`, `gleif_l2`) |
-| ACCC infringement notices register | 3 | CC BY 4.0 (site-wide) | Yes, with attribution (third-party content excluded) | Not in this scope |
+| ACCC infringement notices register | 3 | CC BY 4.0 (site-wide) | Yes, with attribution (third-party content excluded) | Yes, 20-notice sample (`accc_notice`; see ACCC fetch log) |
 | TGA ARTG | 3 | All rights reserved, personal / internal use only | **No** (without written permission) | Not in this scope |
 | annualreports.com | 3 | No licence granted; site terms are a disclaimer only | **Unclear, treat as no** | Not in this scope |
 | Wikidata | any | CC0 (structured data) | Yes | Not in this scope |
