@@ -1,0 +1,13 @@
+source,records_in,nodes_out,edges_out,records_rejected,top_rejection_reason
+abr,20658780,1070131,0,19588650,outside_slice (19588650)
+accc_notice,20,41,40,0,
+asic_afsl,6551,13103,19653,0,
+asic_banned_org,15,31,30,0,
+asic_company,4024956,4024957,0,0,
+asic_credit,4308,8617,12924,0,
+asic_liquidator,660,1821,3480,0,
+gleif_l1,59659,59717,171,0,
+gleif_l2,8435,13097,19160,129,self_relationship (129)
+derived:canonical,,1075765,1330629,,
+derived:licence_history,,1393,2091,,
+derived:links_v3,,87264,231457,,

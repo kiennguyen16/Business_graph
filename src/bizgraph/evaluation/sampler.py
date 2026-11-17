@@ -124,6 +124,24 @@ DEFAULT_PLAN: tuple[Quota, ...] = (
     Quota("gleif_l1", "link", "NAME_*", None, segment="foreign"),
 )
 
+# Top-up for a later version, run with --exclude-labelled so it only adds records: every name-path link,
+# the new abstain reasons, the sole-trader ABN links and ended licences.
+TOPUP_PLAN: tuple[Quota, ...] = (
+    Quota("gleif_l1", "link", "NAME_*", None),
+    Quota("gleif_l1", "abstain", "JURISDICTION_MISMATCH", 20),
+    Quota("gleif_l1", "link", "EXACT_ABN", 20, segment="au-person-abn"),
+    Quota("asic_afsl", "link", "EXACT_*", 10, segment="ended"),
+    Quota("asic_credit", "link", "EXACT_*", 10, segment="ended"),
+    Quota("asic_afsl", "abstain", "*", 5, segment="ended"),
+    Quota("asic_credit", "abstain", "*", 5, segment="ended"),
+    Quota("asic_afsl", "abstain", "PARTY_TYPE_CONFLICT", 5),
+    Quota("gleif_l1", "abstain", "AMBIGUOUS", None),
+    Quota("gleif_l1", "abstain", "BELOW_THRESHOLD", 8, segment="au"),
+    Quota("asic_afsl", "link", "NAME_*", 5),
+    Quota("asic_credit", "link", "NAME_*", 5),
+)
+PLANS = {"default": DEFAULT_PLAN, "topup": TOPUP_PLAN}
+
 
 # --------------------------------------------------------------------------------------------------
 # Population
@@ -171,16 +189,51 @@ def band_of(decision: str, outcome: str, score: float | None, threshold: float) 
 
 SEGMENT_SQL = """
     CASE WHEN d.source = 'gleif_l1' THEN
-         CASE WHEN coalesce(r.payload->>'legal_jurisdiction', 'AU') LIKE 'AU%' THEN 'au' ELSE 'foreign' END
+             CASE WHEN coalesce(r.payload->>'legal_jurisdiction', 'AU') NOT LIKE 'AU%' THEN 'foreign'
+                  WHEN r.person_abn THEN 'au-person-abn'
+                  ELSE 'au' END
+         WHEN d.source IN ('asic_afsl', 'asic_credit') THEN
+             CASE WHEN r.last_seen < r.source_last THEN 'ended' ELSE 'current' END
          ELSE '' END
 """
+
+
+# A party key is minted from its strongest identifier (urn:abn, else urn:acn, ...), so a canonical rebuild
+# that gives a party an ABN re-mints its key. Decisions stored before such a rebuild then point at keys
+# that no longer exist. They are mapped to the current party through the identifier table and flagged.
+STALE_KEY_SQL = """
+    SELECT k.canonical_key AS old_key, any_value(i.canonical_key) AS new_key
+    FROM (SELECT DISTINCT {col} AS canonical_key FROM {rel}) k
+    LEFT JOIN party_canonical p ON p.canonical_key = k.canonical_key
+    JOIN identifier i ON i.scheme = split_part(k.canonical_key, ':', 2)
+                     AND i.value = split_part(k.canonical_key, ':', 3)
+    WHERE p.canonical_key IS NULL AND k.canonical_key LIKE 'urn:%'
+    GROUP BY k.canonical_key
+"""
+
+
+def resolve_stale_targets(con: duckdb.DuckDBPyConnection, df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["stale_target"] = None
+    if df.empty:
+        return df
+    con.register("st_dec", df[["target"]].dropna())
+    mapping = dict(con.execute(STALE_KEY_SQL.format(col="target", rel="st_dec")).fetchall())
+    con.unregister("st_dec")
+    if mapping:
+        hit = df["target"].isin(list(mapping))
+        df.loc[hit, "stale_target"] = df.loc[hit, "target"]
+        df.loc[hit, "target"] = df.loc[hit, "target"].map(mapping)
+    return df
 
 
 def decisions_for(con: duckdb.DuckDBPyConnection, version: str) -> pd.DataFrame:
     """Every decision of one matcher version, with its stratum.
 
     The stratum carries a segment that is a property of the reference record, not of the decision:
-    for GLEIF, whether the LEI's legal jurisdiction is Australian ('au') or not ('foreign').
+    for GLEIF, 'foreign' (legal jurisdiction not AU), 'au-person-abn' (the stated ABN belongs to a person
+    party, i.e. a sole trader) or 'au'; for AFSL and credit, 'ended' (the licence is absent from the
+    latest capture) or 'current'.
     """
     df = con.execute(
         f"""
@@ -191,16 +244,25 @@ def decisions_for(con: duckdb.DuckDBPyConnection, version: str) -> pd.DataFrame:
             UNION ALL
             SELECT source, record_id, 'abstain', reason, best_candidate, best_score
             FROM abstention WHERE matcher_version = ?
+        ), r0 AS (
+            SELECT source, record_id, payload, abn, last_seen_snapshot AS last_seen,
+                   max(last_seen_snapshot) OVER (PARTITION BY source) AS source_last
+            FROM source_record
+            WHERE source IN ('gleif_l1', 'asic_afsl', 'asic_credit')
+            QUALIFY row_number() OVER (PARTITION BY source, record_id
+                                       ORDER BY last_seen_snapshot DESC, snapshot_date DESC) = 1
         ), r AS (
-            SELECT source, record_id, payload FROM source_record
-            WHERE source = 'gleif_l1'
-            QUALIFY row_number() OVER (PARTITION BY source, record_id ORDER BY snapshot_date DESC) = 1
+            SELECT r0.*, EXISTS (SELECT 1 FROM identifier i JOIN party_canonical p USING (canonical_key)
+                                 WHERE i.scheme = 'abn' AND i.value = r0.abn AND p.party_type = 'person')
+                         AS person_abn
+            FROM r0
         )
         SELECT d.*, {SEGMENT_SQL} AS segment
         FROM d LEFT JOIN r ON r.source = d.source AND r.record_id = d.record_id
         """,
         [version, version],
     ).df()
+    df = resolve_stale_targets(con, df)
     policy = policy_for(con, version)
     df["version"] = version
     df["threshold"] = [threshold_for(policy, s) for s in df["source"]]

@@ -91,6 +91,88 @@ def header(b: Backend) -> None:
                    f"`{b.matcher_version}` (set BIZGRAPH_MATCHER_VERSION to pick another stored version).")
 
 
+# --------------------------------------------------------------------------- evidence
+
+REASONS = {
+    "NO_CANDIDATE": "no generator found anything",
+    "BELOW_THRESHOLD": "best eligible score under the threshold, or no candidate passed the name gate",
+    "AMBIGUOUS": "top two parties too close (margin rule)",
+    "IDENTIFIER_CONFLICT": "identifiers point at different parties, or a name match is vetoed by an identifier",
+    "PARTY_TYPE_CONFLICT": "person vs organisation",
+    "JURISDICTION_MISMATCH": "a foreign entity whose only name match is an Australian-incorporated party, not "
+                             "the foreign body's Australian registration (ARBN, ABR OIE, ASIC FNOS / RACN)",
+    "QUARANTINED_TARGET": "the target party is quarantined",
+}
+
+
+def _v(x: Any) -> str:
+    if x is None or x == [] or x == "":
+        return ""
+    return ", ".join(map(str, x)) if isinstance(x, (list, tuple)) else str(x)
+
+
+def gates_table(f: dict[str, Any]) -> pd.DataFrame:
+    """The arbiter's gates for one candidate, one row each, in rule order, from its feature vector."""
+    g = f.get
+    rows = []
+
+    def add(rule: str, gate: str, ok: bool | None, ref: Any = "", cand: Any = "") -> None:
+        rows.append({"rule": rule, "gate": gate, "result": "n/a" if ok is None else ("pass" if ok else "FAIL"),
+                     "reference": _v(ref), "candidate": _v(cand)})
+
+    add("R1", "identifier equal", True if g("identifier_match") else None, g("identifier_match_schemes"))
+    add("R1b/R2", "no identifier disagrees", not g("identifier_conflict"), g("identifier_conflict_schemes"))
+    add("R3", "person vs organisation compatible", g("type_compatible", True), g("party_type_basis"),
+        g("candidate_party_type"))
+    if "jurisdiction_conflict" in f:
+        add("R3b", "jurisdiction (foreign entity needs a foreign-body registration)",
+            not g("jurisdiction_conflict"), g("ref_jurisdiction"),
+            f"{g('candidate_entity_type') or ''} foreign_registration={g('candidate_foreign_registration')}")
+    if not g("identifier_match"):
+        add("R5a", "every reference token in the candidate", not g("ref_tokens_missing_in_candidate"),
+            g("ref_tokens_missing_in_candidate"), g("compared_name"))
+        add("R5b", "all distinctive tokens present", (g("distinctive_coverage") or 0) >= 1.0,
+            g("distinctive_missing"), f"coverage {g('distinctive_coverage')}")
+        add("R5c", "legal forms compatible", g("legal_form_compatible", True), g("ref_legal_form"),
+            g("candidate_legal_form"))
+        add("R5d", "no trust / fund vs company conflict", not g("entity_kind_conflict"))
+        add("R5e", "no AUSTRALIA-named subsidiary for a formal foreign name", not g("geo_conflict"))
+        add("R5f", "formal name matches a legal name, not a business name", not g("weak_alias"), "",
+            g("compared_name_kind"))
+        add("R5g", "formal name: no extra candidate tokens",
+            not (g("ref_formal") and g("candidate_extra_tokens")), f"formal={g('ref_formal')}",
+            g("candidate_extra_tokens"))
+        add("R6", "normalised name equal and unique", (g("name_exact") and g("name_exact_unique")) or None,
+            f"exact={g('name_exact')}", f"unique={g('name_exact_unique')}")
+    add("adj", "state agrees (penalty if not)", g("state_match"), g("state_basis"), "")
+    if "postcode_match" in f:
+        add("adj", "postcode agrees", g("postcode_match"), g("ref_postcode"), g("candidate_postcode"))
+    add("R9", "candidate not quarantined", not g("candidate_quarantined"))
+    return pd.DataFrame(rows)
+
+
+def show_gates(features: dict[str, Any]) -> None:
+    t = gates_table(features)
+    st.dataframe(t, hide_index=True, width="stretch",
+                 column_config={"result": st.column_config.TextColumn("result", help="FAIL = this gate blocked it")})
+
+
+def show_stored_evidence(ev: dict[str, Any]) -> None:
+    st.markdown(f"**Explanation:** {ev.get('explanation')}")
+    if ev.get("disagreement"):
+        st.warning(f"Disagreement recorded (other evidence pointed elsewhere): {ev['disagreement']}")
+    if ev.get("runner_up"):
+        st.markdown(f"**Runner-up:** {ev['runner_up']}")
+    st.markdown(f"Threshold {ev.get('threshold')}, path `{ev.get('path')}`, found by {_v(ev.get('found_by'))}, "
+                f"scores {ev.get('scores')}")
+    if ev.get("features"):
+        st.markdown("**Gates** (from the stored feature vector)")
+        show_gates(ev["features"])
+    for path, q in (ev.get("query_text") or {}).items():
+        st.caption(path)
+        st.code(q, language="sql")
+
+
 # --------------------------------------------------------------------------- page 1: resolve
 
 def party_names(b: Backend, keys: list[str]) -> dict[str, tuple[str, str]]:
@@ -154,10 +236,12 @@ def page_resolve(b: Backend) -> None:
             if ev is not None and chosen == r.canonical_key:
                 st.markdown(f"**Decision explanation:** {ev.explanation}")
                 if ev.disagreement:
-                    st.markdown(f"**Disagreement recorded:** {ev.disagreement}")
+                    st.warning(f"Disagreement recorded (other evidence pointed elsewhere): {ev.disagreement}")
                 if ev.runner_up:
                     st.markdown(f"**Runner-up:** {ev.runner_up}")
             st.markdown(f"**Why not eligible:** {r.veto}" if r.veto else "**Eligible** (no veto, passes the name gate or matched on an identifier).")
+            st.markdown("**Gates**")
+            show_gates(r.features)
             c1, c2 = st.columns([1, 1])
             c1.markdown("**Scores**")
             c1.json(jsonable(r.scores))
@@ -406,11 +490,10 @@ def page_traversals(b: Backend) -> None:
     st.dataframe(df(edges), hide_index=True, width="stretch")
     if chain.status == "CYCLE":
         st.error(f"Cycle: {' -> '.join(chain.cycle_path)}; no ultimate parent is claimed.")
-    if "5493002Q4UIXQGSO4I28" in start:
-        st.caption("This snapshot's GLEIF L2 slice stops at the first foreign parent: Citibank Overseas Investment "
-                   "Corp has no parent edge loaded, so the walk ends there (3 hops) and GLEIF's own "
-                   "IS_ULTIMATELY_CONSOLIDATED_BY edge names Citigroup Inc. (check: disagree_off_chain). The 6-hop "
-                   "chain to CITIGROUP INC. needs the transitive-closure slice described in outputs/identifier_coverage.md.")
+    if chain.gleif_check and chain.gleif_check.startswith("disagree"):
+        st.caption("The walked top differs from GLEIF's own IS_ULTIMATELY_CONSOLIDATED_BY edge: "
+                   "`disagree_on_chain` means GLEIF's ultimate is on the path but the walk went higher, "
+                   "`disagree_off_chain` that the slice lacks the edges up to it.")
     st.caption("Cycle behaviour: a visited set stops the walk with status CYCLE and the loop path; no top is "
                "picked. Several parents without a majority stop with AMBIGUOUS. The group scan below reports how "
                "many chains in this data end that way (they are left out of every group).")
@@ -462,6 +545,8 @@ def page_abstentions(b: Backend) -> None:
         st.caption("`n` is what this bundle holds; `n_full_store` the full eval snapshot. Tier 2/3 abstentions are "
                    "all present; GLEIF ones only for the ownership slice.")
     st.dataframe(df(counts), hide_index=True)
+    with st.expander("What each reason means"):
+        st.dataframe(pd.DataFrame([{"reason": k, "meaning": v} for k, v in REASONS.items()]), hide_index=True)
     sources = sorted(counts.source.unique().tolist())
     c1, c2 = st.columns(2)
     src = c1.selectbox("Source", sources, index=sources.index("accc_notice") if "accc_notice" in sources else 0)
@@ -483,7 +568,10 @@ def page_abstentions(b: Backend) -> None:
     if sel:
         ev = b.q("SELECT evidence FROM abstention WHERE matcher_version = ? AND source = ? AND record_id = ?",
                  [b.matcher_version, src, sel])
-        st.json(json.loads(ev.evidence[0]) if len(ev) and ev.evidence[0] else {})
+        blob = json.loads(ev.evidence[0]) if len(ev) and ev.evidence[0] else {}
+        show_stored_evidence(blob)
+        with st.expander("Raw stored evidence JSON"):
+            st.json(blob)
         st.caption("To see every candidate re-scored live, paste the record name on the Resolve page.")
 
 

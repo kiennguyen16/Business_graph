@@ -31,6 +31,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import quote
 
+from bizgraph.domain.models import AbstainReason as _AbstainReason
+
 BG = "https://w3id.org/bizgraph/ont#"
 RDF = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 RDFS = "http://www.w3.org/2000/01/rdf-schema#"
@@ -182,9 +184,9 @@ MATCH_TYPES = frozenset(
         "NAME_NORMALISED_EXACT", "NAME_FUZZY", "NAME_SEMANTIC", "WIKIDATA_ALIAS",
     }
 )
-ABSTAIN_REASONS = frozenset(
-    {"NO_CANDIDATE", "BELOW_THRESHOLD", "AMBIGUOUS", "IDENTIFIER_CONFLICT", "PARTY_TYPE_CONFLICT", "QUARANTINED_TARGET"}
-)
+# Derived from the domain enum so the exporter cannot drift from the matcher;
+# tests/test_ontology.py checks the enum against bg:AbstainReasonScheme.
+ABSTAIN_REASONS = frozenset(r.value for r in _AbstainReason)
 RELATIONSHIP_KINDS = frozenset(
     {"IS_DIRECTLY_CONSOLIDATED_BY", "IS_ULTIMATELY_CONSOLIDATED_BY", "IS_INTERNATIONAL_BRANCH_OF", "SHAREHOLDING", "ACTS_FOR",
      "HAS_TRUSTEE"}

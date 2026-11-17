@@ -62,7 +62,8 @@ BAN_SOURCES = frozenset({"asic_banned_org", "asic_banned"})
 OWNERSHIP_SOURCE = "gleif_l2"
 NOTICE_SOURCES = frozenset({"accc_notice"})
 FACT_SOURCES = frozenset({*LICENCE_SOURCES, *BAN_SOURCES, *NOTICE_SOURCES, OWNERSHIP_SOURCE})
-LEI_RECORD_SOURCE = "gleif_l1"  # Ownership facts point at the L1 records of both ends
+LEI_RECORD_SOURCE = "gleif_l1"
+ASIC_COMPANY_SOURCE = "asic_company"  # Ownership facts point at the L1 records of both ends
 PARTY_TYPES = {"organisation": C.Organisation, "person": C.Person}
 _SCHEME_TYPES = frozenset({"scheme", "managed_investment_scheme", "mis"})
 _ID_SCHEMES = ("abn", "acn", "arbn", "lei", "arsn", "nzbn", "nz_company_no")
@@ -187,8 +188,12 @@ def _json(value: Any) -> Any:
 class RdfExporter:
     """Export named graphs from a DuckDB connection (read-only use is enough)."""
 
-    def __init__(self, con: duckdb.DuckDBPyConnection | Any, ontology_dir: Path | None = None) -> None:
+    def __init__(self, con: duckdb.DuckDBPyConnection | Any, ontology_dir: Path | None = None,
+                 all_asic_company: bool = False) -> None:
+        """all_asic_company=False (default) publishes only the ASIC company records the graph can
+        reach (see `_asic_company_scope_sql`); True publishes the whole register."""
         self.con = getattr(con, "con", con)  # accept a DuckDBStore too
+        self.all_asic_company = all_asic_company
         if ontology_dir is None:
             from bizgraph.config import get_settings
 
@@ -353,6 +358,9 @@ class RdfExporter:
 
         self._end_bounds = self._licence_end_bounds(source, snapshot)
         want_payload = source in FACT_SOURCES
+        scope = ""
+        if source == ASIC_COMPANY_SOURCE and not self.all_asic_company:
+            scope = f"AND record_id IN ({self._asic_company_scope_sql()})"
         desc = ", ".join(f"{expr} AS {name}" for name, expr in _descriptive_sql(source))
         trustee = "payload->>'trustee_acn'" if source == LEI_RECORD_SOURCE else "NULL"
         sql = f"""
@@ -361,6 +369,7 @@ class RdfExporter:
                    {trustee}, {desc}
             FROM source_record
             WHERE source = ? AND first_seen_snapshot <= ? AND last_seen_snapshot >= ?
+              {scope}
             QUALIFY row_number() OVER (
                 PARTITION BY record_id
                 ORDER BY last_seen_snapshot DESC, load_seq DESC NULLS LAST, content_hash) = 1
@@ -452,6 +461,28 @@ class RdfExporter:
             if after <= not_after:
                 out[str(no).lstrip("0")] = (after, not_after)
         return out
+
+    def _asic_company_scope_sql(self) -> str:
+        """ACNs whose ASIC company record is published. The register holds every Australian
+        company (4M rows); the graph only needs the ones it can reach:
+        * the ACN of a canonical party (party_canonical.acn or identifier scheme 'acn');
+        * party_canonical.asic_record_id (the record a canonical party was enriched from);
+        * an ACN asserted by any other source (Tier 2 / Tier 3 records, GLEIF trustee ACNs);
+        * a record named in the quarantine table (evidence for a conflict).
+        Everything else stays in DuckDB as evidence and is one `export --all-asic-company` away."""
+        parts = ["SELECT acn FROM source_record WHERE source NOT IN ('abr', 'asic_company') AND acn IS NOT NULL",
+                 "SELECT payload->>'trustee_acn' FROM source_record WHERE source = 'gleif_l1' "
+                 "AND payload->>'trustee_acn' IS NOT NULL"]
+        pc = self._columns("party_canonical")
+        if "acn" in pc:
+            parts.append("SELECT acn FROM party_canonical WHERE acn IS NOT NULL")
+        if "asic_record_id" in pc:
+            parts.append("SELECT asic_record_id FROM party_canonical WHERE asic_record_id IS NOT NULL")
+        if self._has_table("identifier"):
+            parts.append("SELECT value FROM identifier WHERE scheme = 'acn'")
+        if {"source", "record_id"} <= self._columns("quarantine"):
+            parts.append("SELECT record_id FROM quarantine WHERE source = 'asic_company'")
+        return " UNION ".join(parts)
 
     def _fact_triples(self, source: str, rid: str, rec: str, p: dict[str, Any]) -> Iterator[Any]:
         if source in LICENCE_SOURCES:

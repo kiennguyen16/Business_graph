@@ -1,6 +1,6 @@
 # Business graph demo: Streamlit app + Apache Jena Fuseki, running from the trimmed demo bundle
-# (demo/bundle, built by demo/build_demo_snapshot.py). Build context is the repo root; keep
-# data/, tools/ and .venv/ out of it (see demo/README.md, "Docker").
+# (demo/bundle, built by demo/build_demo_snapshot.py). Build context is the repo root; the
+# repository .dockerignore keeps data/, tools/ and .venv/ out of it.
 #
 #   docker build -t bizgraph-demo .
 #   docker run -p 7860:7860 -e EMBEDDED_FUSEKI=1 bizgraph-demo      # one container, Fuseki inside

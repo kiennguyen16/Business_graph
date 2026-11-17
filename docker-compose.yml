@@ -1,6 +1,6 @@
 # Fallback to hosting: `docker compose up`, then open http://localhost:7860
-# Requires demo/bundle (python demo/build_demo_snapshot.py) and a build context without data/
-# and tools/ (see demo/README.md, "Docker").
+# Requires demo/bundle (python demo/build_demo_snapshot.py, then demo/precompute.py is optional:
+# with Fuseki every page is live). See demo/README.md, "Docker".
 services:
   fuseki:
     build: .

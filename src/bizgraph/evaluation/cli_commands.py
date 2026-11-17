@@ -52,7 +52,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         if not known:
             print(f"unknown matcher version {args.version}", file=sys.stderr)
             return 2
-        out = write_report(con, args.version, labels, Path(args.out), notes)
+        out = write_report(con, args.version, labels, Path(args.out), notes, compare_versions=args.compare)
     finally:
         con.close()
     print(f"wrote {out} (labels {labels}, notes {notes})")
@@ -62,7 +62,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
 def cmd_eval_sample(args: argparse.Namespace) -> int:
     import pandas as pd
 
-    from bizgraph.evaluation.sampler import write_sample
+    from bizgraph.evaluation.sampler import PLANS, write_sample
 
     exclude = None
     if args.exclude_labelled:
@@ -73,7 +73,7 @@ def cmd_eval_sample(args: argparse.Namespace) -> int:
     con = _connect(args)
     try:
         blind, dec, sample = write_sample(con, args.version, Path(args.out_dir), args.name_only_version,
-                                          args.seed, exclude=exclude)
+                                          args.seed, plan=PLANS[args.plan], exclude=exclude)
     finally:
         con.close()
     print(f"{len(sample)} records drawn; blind file {blind}; decisions (do not open before labelling) {dec}")
@@ -86,6 +86,8 @@ def add_evaluation_commands(sub) -> None:
     ev.add_argument("--labels", help="labels CSV (default labels/labels_<version>.csv, else the newest)")
     ev.add_argument("--notes", help="hand-written discussion appended to the report (default labels/notes_*.md)")
     ev.add_argument("--out", default=str(REPO_ROOT / "outputs" / "evaluation.md"))
+    ev.add_argument("--compare", action="append", metavar="VERSION",
+                    help="also score these versions on the same labels (repeatable)")
     ev.add_argument("--memory-limit", default="3GB")
     ev.set_defaults(func=cmd_evaluate)
 
@@ -93,6 +95,8 @@ def add_evaluation_commands(sub) -> None:
     sp.add_argument("--version", required=True)
     sp.add_argument("--name-only-version", help="identifier-stripped run to sample name-path links from")
     sp.add_argument("--seed", type=int, default=20261118)
+    sp.add_argument("--plan", choices=["default", "topup"], default="default",
+                    help="quota plan (sampler.PLANS); 'topup' with --exclude-labelled adds records for a new version")
     sp.add_argument("--out-dir", default=str(REPO_ROOT / "labels"))
     sp.add_argument("--exclude-labelled", action="store_true",
                     help="skip records already in a labels file (top up a sample for a new version)")

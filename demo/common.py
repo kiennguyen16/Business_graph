@@ -26,8 +26,8 @@ DEMO_DIR = Path(__file__).resolve().parent
 BUNDLE_DIR = Path(os.environ.get("BIZGRAPH_BUNDLE_DIR", DEMO_DIR / "bundle"))
 BUNDLE_DB = BUNDLE_DIR / "demo.duckdb"
 BUNDLE_RDF = BUNDLE_DIR / "rdf"
-SNAPSHOT_DB = REPO / "data" / "eval_snapshot_20261118.duckdb"
-DEFAULT_MATCHER_VERSION = "m-1465a4ba-e5444596"
+SNAPSHOT_DB = REPO / "data" / os.environ.get("BIZGRAPH_SNAPSHOT", "snap_v3_demo.duckdb")
+DEFAULT_MATCHER_VERSION = "m-94f4f6b2-d37e44c6"  # v3
 MEMORY_LIMIT = os.environ.get("BIZGRAPH_MEMORY_LIMIT", "2GB")
 
 # Example inputs shared by the app and the precompute step.
@@ -47,6 +47,28 @@ TIER23_SOURCES = ("asic_afsl", "asic_credit", "asic_banned_org", "asic_liquidato
 # are not needed by any traversal: their records are shown from DuckDB.
 GRAPH_SOURCES = ("asic_afsl", "asic_credit", "asic_banned_org", "asic_liquidator", "accc_notice",
                  "gleif_l1", "gleif_l2")
+
+
+def ensure_bundle() -> str | None:
+    """Fetch the demo bundle when it is not on disk and BIZGRAPH_BUNDLE_URL points at a tarball of
+    it (`tar -czf bizgraph_demo_bundle.tar.gz -C demo bundle`, published e.g. as a release asset).
+    Used on hosts that build from git, where demo/bundle/ is not committed."""
+    url = os.environ.get("BIZGRAPH_BUNDLE_URL")
+    if BUNDLE_DB.exists() or not url:
+        return None
+    import tarfile
+    import tempfile
+    import urllib.request
+
+    BUNDLE_DIR.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "bundle.tar.gz"
+        urllib.request.urlretrieve(url, archive)  # noqa: S310 (operator-supplied URL)
+        with tarfile.open(archive) as tf:
+            tf.extractall(BUNDLE_DIR.parent, filter="data")
+    if not BUNDLE_DB.exists():
+        raise RuntimeError(f"{url} did not contain bundle/demo.duckdb")
+    return f"downloaded from {url}"
 
 
 def db_path() -> Path:
@@ -70,11 +92,13 @@ def connect_ro(path: Path | str):
 
 
 def matcher_version(con: Any) -> str:
-    """BIZGRAPH_MATCHER_VERSION, else the latest full-run 'm-' version (not a strip-identifier
-    experiment, not a redecide), else the documented default."""
+    """BIZGRAPH_MATCHER_VERSION, else v3 (DEFAULT_MATCHER_VERSION) when the store has it, else the
+    latest full-run 'm-' version (not a strip-identifier experiment, not a redecide)."""
     env = os.environ.get("BIZGRAPH_MATCHER_VERSION")
     if env:
         return env
+    if con.execute("SELECT count(*) FROM matcher_version WHERE version = ?", [DEFAULT_MATCHER_VERSION]).fetchall()[0][0]:
+        return DEFAULT_MATCHER_VERSION
     rows = con.execute(
         """SELECT version FROM matcher_version
            WHERE version LIKE 'm-%' AND coalesce(json_extract(policy, '$.config.strip_identifiers')::BOOLEAN, false) = false
@@ -238,6 +262,7 @@ class Backend:
     def __init__(self) -> None:
         timings: dict[str, float] = {}
         t0 = time.perf_counter()
+        self.bundle_origin = ensure_bundle()
         self.db_path = db_path()
         self.is_bundle = self.db_path.resolve() == BUNDLE_DB.resolve() if BUNDLE_DB.exists() else False
         self.store = connect_ro(self.db_path)

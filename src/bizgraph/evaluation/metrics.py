@@ -25,7 +25,7 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-from bizgraph.evaluation.sampler import decisions_for, tier_of
+from bizgraph.evaluation.sampler import STALE_KEY_SQL, decisions_for, tier_of
 
 SPECIAL = ("NONE", "NOT_IN_GRAPH", "UNSURE")
 
@@ -182,14 +182,19 @@ def identifier_truth_sweep(con: duckdb.DuckDBPyConnection, versions: list[str],
             d = dec[dec["source"] == s].merge(t, on=["source", "record_id"], how="inner")
             links = d[d["decision"] == "link"]
             correct = int((links["target"] == links["truth"]).sum())
+            _register(con, "t_view", t)
             blocked = con.execute(
-                "SELECT count(DISTINCT c.record_id) FROM candidate c JOIN ("
-                "SELECT * FROM t_view) t ON t.source = c.source AND t.record_id = c.record_id "
-                "AND t.truth = c.canonical_key WHERE c.run_id = ?", [run]
-            ).fetchall()[0][0] if _register(con, "t_view", t) else 0
+                "WITH c AS (SELECT c.source, c.record_id, coalesce(m.new_key, c.canonical_key) AS canonical_key "
+                "FROM candidate c LEFT JOIN (" + STALE_KEY_SQL.format(
+                    col="canonical_key", rel="(SELECT canonical_key FROM candidate WHERE run_id = $run)") + ") m "
+                "ON m.old_key = c.canonical_key WHERE c.run_id = $run) "
+                "SELECT count(DISTINCT c.record_id) FROM c JOIN t_view t ON t.source = c.source "
+                "AND t.record_id = c.record_id AND t.truth = c.canonical_key", {"run": run}
+            ).fetchall()[0][0]
             con.unregister("t_view")
             rows.append({
-                "version": v, "source": s, "threshold": thr, "truth_records": len(t),
+                "version": v, "source": s, "threshold": thr,
+                "stale_keys": int(links["stale_target"].notna().sum()) if "stale_target" in links else 0, "truth_records": len(t),
                 "decided": len(d), "links": len(links), "correct": correct,
                 "wrong": len(links) - correct,
                 "precision": correct / len(links) if len(links) else math.nan,

@@ -23,7 +23,7 @@ from bizgraph.evaluation.metrics import (
     load_labels,
     summarise,
 )
-from bizgraph.evaluation.sampler import decisions_for
+from bizgraph.evaluation.sampler import STALE_KEY_SQL, decisions_for
 
 
 def _md(df: pd.DataFrame) -> str:
@@ -104,16 +104,41 @@ def blocking_check(con: duckdb.DuckDBPyConnection, df: pd.DataFrame, version: st
         return 0, 0, []
     con.register("bc", d)
     hit = con.execute(
-        "SELECT DISTINCT bc.sample_id FROM bc JOIN candidate c ON c.source = bc.source AND c.record_id = bc.record_id "
-        "AND c.canonical_key = bc.true_canonical_key WHERE c.run_id = ?", [run]).fetchall()
+        "WITH c AS (SELECT c.source, c.record_id, coalesce(m.new_key, c.canonical_key) AS canonical_key "
+        "FROM candidate c JOIN bc ON bc.source = c.source AND bc.record_id = c.record_id LEFT JOIN ("
+        + STALE_KEY_SQL.format(col="canonical_key", rel="(SELECT canonical_key FROM candidate WHERE run_id = $run)")
+        + ") m ON m.old_key = c.canonical_key WHERE c.run_id = $run) "
+        "SELECT DISTINCT bc.sample_id FROM bc JOIN c ON c.source = bc.source AND c.record_id = bc.record_id "
+        "AND c.canonical_key = bc.true_canonical_key", {"run": run}).fetchall()
     con.unregister("bc")
     got = {h for (h,) in hit}
     missed = sorted(set(d["sample_id"]) - got)
     return len(got), len(d), missed
 
 
+def comparison_table(con: duckdb.DuckDBPyConnection, versions: list[str], labels: pd.DataFrame) -> pd.DataFrame:
+    """The same labels scored against several versions (sample counts; UNSURE excluded)."""
+    rows = []
+    for v in versions:
+        known = con.execute("SELECT count(*) FROM matcher_version WHERE version = ?", [v]).fetchall()[0][0]
+        if not known:
+            continue
+        d = evaluate(con, v, labels)
+        for grp, g in [("all", d), *(("name links" if k == "name" else k, g) for k, g in d.assign(
+                pg=[("exact" if str(o).startswith("EXACT_") else "name") if dd == "link" else "abstain"
+                    for dd, o in zip(d["decision"], d["outcome"])]).groupby("pg") if k != "abstain")]:
+            s = summarise(g, None).iloc[0]
+            rows.append({"version": v, "subset": grp, "labelled": int(s["labelled"]), "links": int(s["links"]),
+                         "wrong": int(s["wrong_links"]),
+                         "precision (95% CI)": f"{fmt_pct(s['precision'])} ({fmt_ci(s['p_lo'], s['p_hi'], s['links'])})",
+                         "missed": int(s["fn"]),
+                         "recall (95% CI)": f"{fmt_pct(s['recall'])} ({fmt_ci(s['r_lo'], s['r_hi'], s['true_target_in_graph'])})"})
+    return pd.DataFrame(rows)
+
+
 def build_report(con: duckdb.DuckDBPyConnection, version: str, labels_path: Path,
-                 notes_path: Path | None = None, sweep: bool = True) -> str:
+                 notes_path: Path | None = None, sweep: bool = True,
+                 compare_versions: list[str] | None = None) -> str:
     labels = load_labels(labels_path)
     df = evaluate(con, version, labels)
     pop = decisions_for(con, version)
@@ -141,7 +166,7 @@ def build_report(con: duckdb.DuckDBPyConnection, version: str, labels_path: Path
     strata = strata.merge(pop.groupby("stratum").size().rename("population").reset_index(), on="stratum", how="left")
     strata = strata.sort_values("stratum")
     w(f"Strata of `{version}` that hold labelled records (stratum = source | decision | match type or abstain "
-      "reason | score band | segment; segment is `foreign` / `au` for GLEIF legal jurisdiction):\n")
+      "reason | score band | segment; segment: GLEIF `foreign` (legal jurisdiction not AU), `au-person-abn` (stated ABN is a sole trader) or `au`; AFSL / credit `ended` or `current` licence):\n")
     w(_md(strata[["stratum", "population", "labelled"]]))
     unl = pop.groupby("stratum").size().rename("population").reset_index()
     unl = unl[~unl["stratum"].isin(strata["stratum"])]
@@ -178,6 +203,13 @@ def build_report(con: duckdb.DuckDBPyConnection, version: str, labels_path: Path
     w(f"\nOverall (all labelled, sample counts): {int(allt['links'])} links, {int(allt['wrong_links'])} wrong, "
       f"precision {fmt_pct(allt['precision'])} ({fmt_ci(allt['p_lo'], allt['p_hi'], allt['links'])}); recall "
       f"{fmt_pct(allt['recall'])} over {int(allt['true_target_in_graph'])} in-graph records.\n")
+
+    if compare_versions:
+        w("\n### The same labels against other matcher versions\n")
+        w("Sample counts on every labelled record each version decided. The label sample was drawn on v2's and "
+          "then v3's strata, so these rows compare versions on the same records; they are not population estimates "
+          "for the other versions.\n")
+        w(_md(comparison_table(con, [version, *compare_versions], labels)))
 
     # ---------------------------------------------------------------- errors
     w("\n## 3. Every wrong link and every miss in the labelled set\n")
@@ -236,6 +268,7 @@ def build_report(con: duckdb.DuckDBPyConnection, version: str, labels_path: Path
         sw_t = pd.DataFrame({
             "version": sw["version"], "source": sw["source"], "threshold": sw["threshold"],
             "truth records": sw["truth_records"], "links": sw["links"], "correct": sw["correct"],
+            "stale keys remapped": sw["stale_keys"],
             "wrong": sw["wrong"], "precision": sw["precision"].map(fmt_pct), "recall": sw["recall"].map(fmt_pct),
             "blocking recall": sw["blocking_recall"].map(lambda x: f"{100 * x:.2f}%"),
             "abstentions": sw["abstain_reasons"].map(lambda d: ", ".join(f"{k} {v}" for k, v in sorted(d.items()))),
@@ -266,8 +299,8 @@ def build_report(con: duckdb.DuckDBPyConnection, version: str, labels_path: Path
 
 
 def write_report(con: duckdb.DuckDBPyConnection, version: str, labels_path: Path, out_path: Path,
-                 notes_path: Path | None = None) -> Path:
-    text = build_report(con, version, labels_path, notes_path)
+                 notes_path: Path | None = None, compare_versions: list[str] | None = None) -> Path:
+    text = build_report(con, version, labels_path, notes_path, compare_versions=compare_versions)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text, encoding="utf-8")
     return out_path

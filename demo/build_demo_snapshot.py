@@ -1,12 +1,13 @@
 """Build the trimmed demo bundle that the hosted app runs from (no Fuseki, no 3 GB store).
 
-    python demo/build_demo_snapshot.py [--src data/eval_snapshot_20261118.duckdb] [--out demo/bundle]
+    python demo/build_demo_snapshot.py [--src data/snap_v3_demo.duckdb] [--out demo/bundle]
                                        [--sample 5000] [--seed 42]
 
 The source file is opened READ-ONLY. Output:
 
     demo/bundle/demo.duckdb            trimmed store (schema identical to the full one)
-    demo/bundle/licence_event.parquet  licence events derived from the archived register files
+    demo/bundle/licence_event.parquet  licence events (the store's table; derived from the archived
+                                       register files only when the store has none)
     demo/bundle/rdf/*.nt.gz            published graphs exported FROM the bundle (so graph and
                                        store agree), loaded into rdflib by the app
     demo/bundle/rdf/manifest.json      graph IRI, file, triple count per graph
@@ -15,14 +16,21 @@ The source file is opened READ-ONLY. Output:
 Which parties are kept (set K):
   1. every party linked from a Tier 2/3 source (AFSL, credit, banned orgs, liquidators, ACCC)
      under the demo matcher version, and the best candidate of every Tier 2/3 abstention;
-  2. the GLEIF ownership slice: every L1 record that appears in an L2 edge, the parties those
-     records are linked to, and parties sharing their LEI / ABN / ACN (the traversal's equality
-     attribution);
+  2. the GLEIF ownership slice: every L1 record that appears in an L2 edge (with v3 this includes
+     the foreign parents, so the Citigroup and Macquarie chains walk to their real tops), the
+     parties those records are linked to, and parties sharing their LEI / ABN / ACN (the
+     traversal's equality attribution);
   3. the holders (ABN / ACN before and after) of every licence event;
   4. every candidate the FULL matcher generates for the demo's example queries, so the Resolve
      page shows the same candidates as against the full store;
-  5. quarantined parties;
+  5. the example entities of the Entity and Traversals pages, quarantined parties, and the best
+     candidate of every GLEIF abstention refused by a gate (JURISDICTION_MISMATCH, AMBIGUOUS,
+     IDENTIFIER_CONFLICT, PARTY_TYPE_CONFLICT, QUARANTINED_TARGET);
   6. a seeded random sample of organisations (default 5,000) so browsing is not only hits.
+
+Links and abstentions (demo matcher version only): all Tier 2/3; for GLEIF, every L1 record in
+the ownership slice, every L1 record linked to a kept party (so an entity page lists all of its
+linked records) and every gate abstention, each with its source record.
 
 Resolution indexes. `NameIndex.ensure` rebuilds res_* from the bundle, then the corpus
 statistics that the scores and the exact path depend on are taken from the FULL index:
@@ -53,6 +61,7 @@ from common import (  # noqa: E402
     TIER23_SOURCES,
     compute_licence_events,
     connect_ro,
+    ENTITY_EXAMPLES,
     make_matcher,
     matcher_version,
     stored_policy,
@@ -75,6 +84,7 @@ EXAMPLE_QUERIES = (
     "John Smith",
 )
 
+GATE_REASONS = "'JURISDICTION_MISMATCH', 'AMBIGUOUS', 'IDENTIFIER_CONFLICT', 'PARTY_TYPE_CONFLICT', 'QUARANTINED_TARGET'"
 COPY_ALL = ("matcher_version", "source_snapshot", "quarantine")
 
 
@@ -112,10 +122,6 @@ def build(src_db: Path, out_dir: Path, sample: int, seed: int) -> dict:
     info["timings_s"]["example_candidates"] = round(time.perf_counter() - t, 1)
     info["example_candidate_keys"] = len(ex_keys)
 
-    t = time.perf_counter()
-    events = compute_licence_events()
-    info["timings_s"]["licence_events"] = round(time.perf_counter() - t, 1)
-
     con = duckdb.connect(str(tmp))
     con.execute(f"SET memory_limit='{os.environ.get('BIZGRAPH_MEMORY_LIMIT', '2GB')}'")
     con.execute("SET threads=2")
@@ -124,13 +130,23 @@ def build(src_db: Path, out_dir: Path, sample: int, seed: int) -> dict:
     tiers = ", ".join(f"'{s}'" for s in TIER23_SOURCES)
     con.execute("CREATE TEMP TABLE v AS SELECT ? AS mv", [version])
 
-    # licence events (same DDL as the pipeline)
+    # licence events: the store's own table when it has one (v3 does), else derived from the
+    # archived register files with the pipeline's code
     from bizgraph.pipeline import licence_history as lh
 
-    con.execute(lh.LICENCE_EVENT_DDL)
-    ph = ", ".join("?" for _ in lh._COLUMNS)
-    con.executemany(f"INSERT INTO licence_event ({', '.join(lh._COLUMNS)}) VALUES ({ph})", [e.row() for e in events])
-    info["licence_events"] = len(events)
+    t = time.perf_counter()
+    if con.execute("SELECT count(*) FROM duckdb_tables() WHERE database_name = 'src' AND table_name = 'licence_event'"
+                   ).fetchall()[0][0]:
+        con.execute("CREATE TABLE licence_event AS SELECT * FROM src.licence_event")
+        info["licence_event_origin"] = "copied from the store"
+    else:
+        events = compute_licence_events()
+        con.execute(lh.LICENCE_EVENT_DDL)
+        ph = ", ".join("?" for _ in lh._COLUMNS)
+        con.executemany(f"INSERT INTO licence_event ({', '.join(lh._COLUMNS)}) VALUES ({ph})", [e.row() for e in events])
+        info["licence_event_origin"] = "derived from data/raw history files"
+    info["licence_events"] = con.execute("SELECT count(*) FROM licence_event").fetchall()[0][0]
+    info["timings_s"]["licence_events"] = round(time.perf_counter() - t, 1)
 
     t = time.perf_counter()
     # GLEIF slice: every L1 record on an L2 edge
@@ -158,12 +174,26 @@ def build(src_db: Path, out_dir: Path, sample: int, seed: int) -> dict:
                                         OR p.acn IN (e.holder_acn_before, e.holder_acn_after)""")
     con.execute("INSERT INTO k SELECT canonical_key, 'quarantine' FROM src.quarantine WHERE canonical_key IS NOT NULL")
     con.executemany("INSERT INTO k VALUES (?, 'example_query_candidate')", [[x] for x in sorted(ex_keys)])
+    con.executemany("INSERT INTO k VALUES (?, 'example_entity')", [[x] for x in ENTITY_EXAMPLES])
+    # GLEIF abstentions refused by a gate (not just a low score) are all kept, with their best candidate
+    con.execute(f"""INSERT INTO k SELECT best_candidate, 'gleif_gate_abstention_best' FROM src.abstention
+                    WHERE matcher_version = (SELECT mv FROM v) AND source = 'gleif_l1'
+                      AND reason IN ({GATE_REASONS}) AND best_candidate IS NOT NULL""")
     con.execute(f"""INSERT INTO k SELECT canonical_key, 'random_sample' FROM
                     (SELECT canonical_key FROM src.party_canonical WHERE party_type = 'organisation'
                      ORDER BY hash(canonical_key || '{seed}') LIMIT {int(sample)})""")
     info["k_by_reason"] = dict(con.execute("SELECT why, count(DISTINCT canonical_key) FROM k GROUP BY 1 ORDER BY 1").fetchall())
     con.execute("CREATE TEMP TABLE keys AS SELECT DISTINCT canonical_key FROM k WHERE canonical_key IS NOT NULL")
     info["parties"] = con.execute("SELECT count(*) FROM keys").fetchall()[0][0]
+    # GLEIF L1 records kept: the ownership slice, every record linked to a kept party, and every
+    # gate abstention, so an entity page lists all of its linked records
+    con.execute(f"""CREATE TEMP TABLE g1 AS
+        SELECT record_id FROM l1
+        UNION SELECT l.record_id FROM src.link l JOIN keys USING (canonical_key)
+              WHERE l.matcher_version = (SELECT mv FROM v) AND l.source = 'gleif_l1'
+        UNION SELECT record_id FROM src.abstention
+              WHERE matcher_version = (SELECT mv FROM v) AND source = 'gleif_l1' AND reason IN ({GATE_REASONS})""")
+    info["gleif_l1_records"] = con.execute("SELECT count(*) FROM g1").fetchall()[0][0]
     info["timings_s"]["select_parties"] = round(time.perf_counter() - t, 1)
 
     t = time.perf_counter()
@@ -174,13 +204,16 @@ def build(src_db: Path, out_dir: Path, sample: int, seed: int) -> dict:
         con.execute(f"CREATE TABLE {tname} AS SELECT * FROM src.{tname}")
     con.execute("CREATE TABLE label AS SELECT * FROM src.label LIMIT 0")
     con.execute("CREATE TABLE candidate AS SELECT * FROM src.candidate LIMIT 0")
-    # decisions of the demo version only: all Tier 2/3; GLEIF only for the ownership slice
+    if con.execute("SELECT count(*) FROM duckdb_tables() WHERE database_name = 'src' AND table_name = 'candidate_ref'"
+                   ).fetchall()[0][0]:
+        con.execute("CREATE TABLE candidate_ref AS SELECT * FROM src.candidate_ref LIMIT 0")
+    # decisions of the demo version only: all Tier 2/3; GLEIF for the kept L1 records
     con.execute(f"""CREATE TABLE link AS SELECT l.* FROM src.link l
         WHERE l.matcher_version = (SELECT mv FROM v)
-          AND (l.source IN ({tiers}) OR (l.source = 'gleif_l1' AND l.record_id IN (SELECT record_id FROM l1)))""")
+          AND (l.source IN ({tiers}) OR (l.source = 'gleif_l1' AND l.record_id IN (SELECT record_id FROM g1)))""")
     con.execute(f"""CREATE TABLE abstention AS SELECT a.* FROM src.abstention a
         WHERE a.matcher_version = (SELECT mv FROM v)
-          AND (a.source IN ({tiers}) OR (a.source = 'gleif_l1' AND a.record_id IN (SELECT record_id FROM l1)))""")
+          AND (a.source IN ({tiers}) OR (a.source = 'gleif_l1' AND a.record_id IN (SELECT record_id FROM g1)))""")
     # source records: Tier 2/3 and GLEIF L2 in full, the GLEIF L1 slice, and the ABR / ASIC company
     # records the kept parties and their aliases were built from
     con.execute(f"""CREATE TEMP TABLE rec_keys AS
@@ -190,7 +223,7 @@ def build(src_db: Path, out_dir: Path, sample: int, seed: int) -> dict:
             UNION ALL SELECT source, record_id FROM alias WHERE record_id IS NOT NULL)""")
     con.execute(f"""CREATE TABLE source_record AS
         SELECT r.* FROM src.source_record r WHERE r.source IN ({tiers}, 'gleif_l2')
-        UNION ALL SELECT r.* FROM src.source_record r JOIN l1 USING (record_id) WHERE r.source = 'gleif_l1'
+        UNION ALL SELECT r.* FROM src.source_record r JOIN g1 USING (record_id) WHERE r.source = 'gleif_l1'
         UNION ALL SELECT r.* FROM src.source_record r JOIN rec_keys k USING (source, record_id)
                   WHERE r.source NOT IN ({tiers}, 'gleif_l2', 'gleif_l1')""")
     con.execute("""CREATE TABLE demo_full_counts AS

@@ -718,3 +718,16 @@ def test_published_set_passes_shacl(store, tmp_path):
     assert any(f.name == "derived__licence_history.nt" for f in files)
     report = ShaclValidator("pyshacl", ONT_DIR).validate_files(files)
     assert {v.focus for v in _violations(report)} == CONFLICT_PARTIES
+
+
+def test_asic_company_published_only_when_referenced(store, tmp_path):
+    store.records.upsert([_rec("asic_company", "999999990", "UNRELATED HOLDINGS PTY LTD",
+                               ids=[(IdScheme.ACN, "999999990")])])
+    g = NamedGraph.source_snapshot("asic_company", SNAP)
+    trimmed = _graph(RdfExporter(store, ONT_DIR).export(g, tmp_path / "trim").path)
+    full = _graph(RdfExporter(store, ONT_DIR, all_asic_company=True).export(g, tmp_path / "full").path)
+    kept = URIRef(f"urn:src:asic_company:{SCA_ACN}")  # the ACN of a canonical party
+    other = URIRef("urn:src:asic_company:999999990")
+    assert (kept, RDF.type, URIRef(BG + "SourceRecord")) in trimmed
+    assert (other, None, None) not in trimmed
+    assert (other, RDF.type, URIRef(BG + "SourceRecord")) in full

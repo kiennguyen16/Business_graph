@@ -170,3 +170,24 @@ def test_identifier_truth_sweep_counts_links_against_printed_abn(con):
     row = sw.iloc[0]
     assert row["wrong"] == 0 and row["links"] == row["correct"]
     assert row["truth_records"] == sum(1 for i in range(5, 60) if i % 2)
+
+
+def test_stale_keys_from_before_a_canonical_rebuild_are_remapped(con):
+    # A party re-minted from urn:acn:... to urn:abn:... after its ABN arrived: old decisions still say urn:acn.
+    con.execute("INSERT INTO identifier VALUES ('urn:abn:10000000007', 'acn', '000000007')")
+    con.execute("INSERT INTO link (link_id, matcher_version, source, record_id, canonical_key, match_type, confidence, "
+                "evidence) VALUES ('Lx', ?, 'asic_afsl', 'R007', 'urn:acn:000000007', 'NAME_FUZZY', 0.95, '{}')", [V])
+    d = decisions_for(con, V)
+    row = d[(d["record_id"] == "R007") & (d["decision"] == "link") & (d["outcome"] == "NAME_FUZZY")
+            & d["stale_target"].notna()]
+    assert len(row) == 1
+    assert row["target"].iloc[0] == "urn:abn:10000000007"
+    assert row["stale_target"].iloc[0] == "urn:acn:000000007"
+
+
+def test_licence_segment_marks_ended_records(con):
+    con.execute("UPDATE source_record SET last_seen_snapshot = DATE '2026-10-01' WHERE record_id = 'R010'")
+    d = decisions_for(con, V)
+    seg = d.set_index("record_id")["segment"]
+    assert seg["R010"] == "ended" and seg["R011"] == "current"
+    assert d["stratum"].str.endswith("|ended").any()

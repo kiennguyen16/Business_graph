@@ -134,6 +134,28 @@ def test_match_type_scheme(schema: Graph, shapes: Graph):
         if (lst := shapes.value(ps, SH["in"])) is not None
     ]
     assert concepts in in_lists
+    # The code enum and the scheme must agree.
+    from bizgraph.domain.models import MatchType
+
+    assert {m.value for m in MatchType} == expected
+
+
+def test_abstain_reason_scheme_matches_enum_and_shape(schema: Graph, shapes: Graph):
+    from bizgraph.domain.models import AbstainReason
+
+    concepts = set(schema.subjects(RDF.type, BG.AbstainReason))
+    notations = {str(schema.value(c, SKOS.notation)) for c in concepts}
+    assert notations == {r.value for r in AbstainReason}
+    assert "JURISDICTION_MISMATCH" in notations
+    for c in concepts:
+        assert (c, SKOS.inScheme, BG.AbstainReasonScheme) in schema
+        assert schema.value(c, SKOS.definition) is not None
+    in_lists = [
+        set(shapes.items(lst))
+        for ps in shapes.objects(URIRef("https://w3id.org/bizgraph/shapes#AbstentionShape"), SH.property)
+        if (lst := shapes.value(ps, SH["in"])) is not None
+    ]
+    assert concepts in in_lists
 
 
 _BG_TERM = re.compile(r"\bbg:([A-Za-z_][A-Za-z0-9_]*)")

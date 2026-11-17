@@ -161,7 +161,7 @@ def cmd_export(args: argparse.Namespace) -> int:
     settings = get_settings()
     out = Path(args.out) if args.out else settings.rdf_dir
     with _ro_store(args) as store:
-        exporter = RdfExporter(store, settings.ontology_dir)
+        exporter = RdfExporter(store, settings.ontology_dir, all_asic_company=args.all_asic_company)
         graphs = _select_graphs(exporter, args)
         if not graphs:
             print("nothing to export", file=sys.stderr)
@@ -276,6 +276,8 @@ def _add_rdf_commands(sub) -> None:
     ex.add_argument("--graph", action="append", help="graph IRI (repeatable), overrides kind")
     ex.add_argument("--out", help="output directory (default data/rdf)")
     ex.add_argument("--nquads", action="store_true", help="write .nq (graph on every line)")
+    ex.add_argument("--all-asic-company", action="store_true",
+                    help="publish every ASIC company record (default: only ACNs the graph references)")
     ex.set_defaults(func=cmd_export)
 
     pub = sub.add_parser("publish", help="export and load named graphs into Fuseki")
@@ -473,6 +475,11 @@ def build_parser() -> argparse.ArgumentParser:
     from bizgraph.resolution.cli_commands import add_resolution_commands
 
     add_resolution_commands(sub)
+    # resolve-file input/output handling lives outside the resolution package so that it does not
+    # change the package code hash (and so the matcher version string). See bizgraph.resolve_io.
+    from bizgraph.resolve_io import configure_parser
+
+    configure_parser(sub.choices["resolve-file"])
     from bizgraph.evaluation.cli_commands import add_evaluation_commands
 
     add_evaluation_commands(sub)

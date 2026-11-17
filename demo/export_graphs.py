@@ -1,6 +1,6 @@
 """Export the published graphs the demo reads from a DuckDB file, opened read-only.
 
-    python demo/export_graphs.py --db data/eval_snapshot_20261118.duckdb --out <dir> [--nq] [--gzip]
+    python demo/export_graphs.py --db data/snap_v3_demo.duckdb --out <dir> [--nq] [--gzip]
 
 Graphs: ontology, one source graph per GRAPH_SOURCES at its latest snapshot, canonical, the
 links graph of the demo matcher version, and the derived licence-history graph (from a TEMP
