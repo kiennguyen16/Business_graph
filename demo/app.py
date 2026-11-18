@@ -39,7 +39,22 @@ def inject_styles() -> None:
         """
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        :root { --ink:#102A43; --muted:#627D98; --teal:#00A6A6; --navy:#102A43; --line:#D9E2EC; --soft:#F0F4F8; }
+        :root { --ink:#102A43; --muted:#334E68; --teal:#007A7A; --navy:#102A43; --line:#BCCCDC; --soft:#F0F4F8; }
+        /* legibility: darker body, caption and label text */
+        p, li, label, [data-testid="stMarkdownContainer"] { color: var(--ink); }
+        [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { color: var(--muted) !important; }
+        /* page tabs (segmented control styled as tabs) */
+        div[data-testid="stButtonGroup"] { border-bottom: 2px solid var(--line); margin-bottom: .6rem; }
+        div[data-testid="stButtonGroup"] button { border: none !important; border-radius: 0 !important; background: transparent !important;
+            color: var(--muted) !important; font-weight: 600; font-size: 1rem; padding: .7rem 1.1rem; margin-bottom: -2px;
+            border-bottom: 3px solid transparent !important; box-shadow: none !important; }
+        div[data-testid="stButtonGroup"] button:hover { color: var(--teal) !important; }
+        div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"] { color: var(--teal) !important; border-bottom-color: var(--teal) !important; }
+        /* sidebar table of contents */
+        [data-testid="stSidebar"] .toc-title { font-size: .8rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 .4rem; }
+        [data-testid="stSidebar"] .toc-current { font-weight: 700; color: var(--teal); padding: .35rem 0; border-left: 3px solid var(--teal); padding-left: .6rem; }
+        [data-testid="stSidebar"] button[kind="tertiary"] { justify-content: flex-start; padding: .35rem 0 .35rem .75rem; color: var(--ink); font-weight: 500; }
+        [data-testid="stSidebar"] button[kind="tertiary"]:hover { color: var(--teal); }
         html, body, [class*="css"] { font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
         .block-container { max-width: 1440px; padding-top: 2.2rem; padding-bottom: 3rem; }
         h1, h2, h3 { color: var(--ink); letter-spacing: -0.025em; }
@@ -104,7 +119,6 @@ def entity_url(key: str | None) -> str | None:
 # --------------------------------------------------------------------------- header
 
 def header(b: Backend) -> None:
-    st.markdown('<div class="eyebrow">Case study demo</div>', unsafe_allow_html=True)
     st.title("AU/NZ Business Graph")
     mode = "trimmed demo bundle" if b.is_bundle else "full eval snapshot"
     sem = "on (local MiniLM)" if b.matcher.embedder else "off"
@@ -669,15 +683,20 @@ def main() -> None:
         ss["entity_key"] = ss["entity_target"] = st.query_params.get("key", "urn:abn:48123123124")
     if "nav_to" in ss:
         ss["page_radio"] = ss.pop("nav_to")
-    page = st.radio("Navigate", PAGES, key="page_radio", horizontal=True, label_visibility="collapsed")
-    st.sidebar.radio("Page", PAGES, key="page_radio_sidebar", index=PAGES.index(page), on_change=lambda: ss.update(page_radio=ss.page_radio_sidebar))
-    st.sidebar.markdown(f"Store: `{b.db_path.name}`  \nMatcher: `{b.matcher_version}`  \n"
-                        f"licence_event: {b.licence_event_origin}")
-    st.sidebar.caption(f"Resolution index: {b.index_origin}")
-    st.sidebar.caption(f"Startup timings (s): {b.startup_timings}")
+    # Main navigation: tabs (a segmented control styled as tabs, so only the active page runs).
+    page = st.segmented_control("Navigate", PAGES, key="page_radio", label_visibility="collapsed")
+    if page is None:  # clicking the active tab deselects it; stay on the last page
+        page = ss.get("last_page", "Resolve")
+    ss["last_page"] = page
+    # Sidebar: table of contents only.
+    st.sidebar.markdown('<div class="toc-title">Contents</div>', unsafe_allow_html=True)
+    for p in PAGES:
+        if p == page:
+            st.sidebar.markdown(f'<div class="toc-current">{p}</div>', unsafe_allow_html=True)
+        else:
+            st.sidebar.button(p, key=f"toc_{p}", type="tertiary", on_click=lambda p=p: ss.update(nav_to=p))
     {"Resolve": page_resolve, "Entity": page_entity, "Traversals": page_traversals,
      "Abstentions": page_abstentions, "Projection": page_projection}[page](b)
-    st.sidebar.caption(f"This page rendered in {(time.perf_counter() - t0) * 1000:.0f} ms.")
 
 
 main()
