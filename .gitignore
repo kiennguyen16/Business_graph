@@ -23,3 +23,5 @@ fuseki/databases/
 # Generated demo bundle (rebuilt by demo/build_demo_snapshot.py; published separately)
 demo/bundle/
 deploy/
+demo/precompute.err
+demo/precompute.log
