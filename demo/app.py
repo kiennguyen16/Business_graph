@@ -61,6 +61,9 @@ def inject_styles() -> None:
         [data-testid="stSidebar"] .toc-current { font-weight: 700; color: var(--teal); padding: .35rem 0; border-left: 3px solid var(--teal); padding-left: .6rem; }
         [data-testid="stSidebar"] button[kind="tertiary"] { justify-content: flex-start; padding: .35rem 0 .35rem .75rem; color: var(--ink); font-weight: 500; }
         [data-testid="stSidebar"] button[kind="tertiary"]:hover { color: var(--teal); }
+        [data-testid="stSidebar"] button[kind="tertiary"]:disabled { color: var(--teal) !important; font-weight: 700;
+            border-left: 3px solid var(--accent) !important; border-radius: 0; opacity: 1; cursor: default; }
+        [data-testid="stSidebar"] button[kind="tertiary"]:disabled p { color: var(--teal) !important; }
         html, body, [class*="css"] { font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
         .block-container { max-width: 1440px; padding-top: 2.2rem; padding-bottom: 3rem; }
         h1, h2, h3 { color: var(--ink); letter-spacing: -0.025em; }
@@ -696,11 +699,11 @@ def main() -> None:
     ss["last_page"] = page
     # Sidebar: table of contents only.
     st.sidebar.markdown('<div class="toc-title">Contents</div>', unsafe_allow_html=True)
+    # Every entry is the same widget type with a stable key, so a rerun never swaps element types
+    # (which made Streamlit flash the old entry). The current page is a disabled button styled as active.
     for p in PAGES:
-        if p == page:
-            st.sidebar.markdown(f'<div class="toc-current">{p}</div>', unsafe_allow_html=True)
-        else:
-            st.sidebar.button(p, key=f"toc_{p}", type="tertiary", on_click=lambda p=p: ss.update(nav_to=p))
+        st.sidebar.button(p, key=f"toc_{p}", type="tertiary", disabled=(p == page),
+                          on_click=lambda p=p: ss.update(nav_to=p))
     {"Resolve": page_resolve, "Entity": page_entity, "Traversals": page_traversals,
      "Abstentions": page_abstentions, "Projection": page_projection}[page](b)
 
