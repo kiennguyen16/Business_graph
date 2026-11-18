@@ -25,6 +25,9 @@ if str(REPO / "src") not in sys.path:
 DEMO_DIR = Path(__file__).resolve().parent
 BUNDLE_DIR = Path(os.environ.get("BIZGRAPH_BUNDLE_DIR", DEMO_DIR / "bundle"))
 BUNDLE_DB = BUNDLE_DIR / "demo.duckdb"
+DEFAULT_BUNDLE_URL = (
+    "https://github.com/kiennguyen16/Business_graph/releases/download/demo-bundle-v4/demo_bundle.tar.gz"
+)
 BUNDLE_RDF = BUNDLE_DIR / "rdf"
 SNAPSHOT_DB = REPO / "data" / os.environ.get("BIZGRAPH_SNAPSHOT", "snap_v3_demo.duckdb")
 DEFAULT_MATCHER_VERSION = "m-b5e50f74-d37e44c6"  # v4
@@ -53,8 +56,19 @@ def ensure_bundle() -> str | None:
     """Fetch the demo bundle when it is not on disk and BIZGRAPH_BUNDLE_URL points at a tarball of
     it (`tar -czf bizgraph_demo_bundle.tar.gz -C demo bundle`, published e.g. as a release asset).
     Used on hosts that build from git, where demo/bundle/ is not committed."""
+    if BUNDLE_DB.exists():
+        return None
     url = os.environ.get("BIZGRAPH_BUNDLE_URL")
-    if BUNDLE_DB.exists() or not url:
+    if not url:
+        try:  # Streamlit Cloud secrets
+            import streamlit as st
+
+            url = st.secrets.get("BIZGRAPH_BUNDLE_URL")
+        except Exception:
+            url = None
+    if not url and not SNAPSHOT_DB.exists():
+        url = DEFAULT_BUNDLE_URL  # public release asset; lets a fresh clone run with no setup
+    if not url:
         return None
     import tarfile
     import tempfile
