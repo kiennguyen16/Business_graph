@@ -1,12 +1,16 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.5.1+cpu
-sentence-transformers==3.3.1
+# Versions match the environment the demo was tested in (2026-11-18). Lower bounds only, so
+# Streamlit Cloud can pick wheels for its Python (3.12 to 3.14).
+torch>=2.15.0
+sentence-transformers>=6.3,<7
+transformers>=5.23,<6
 -e .
-streamlit>=1.40,<2
-duckdb>=1.1,<2
-rapidfuzz>=3.10,<4
-pandas>=2.2,<3
-pyarrow>=18,<20
-rdflib>=7,<8
-requests>=2.32,<3
-psutil>=6,<7
+streamlit>=1.67,<2
+duckdb>=2.0,<3
+rapidfuzz>=3.14,<4
+numpy>=2.5,<3
+pandas>=3.1,<4
+pyarrow>=26,<27
+rdflib>=7.6,<8
+requests>=2.34,<3
+psutil>=7,<8
