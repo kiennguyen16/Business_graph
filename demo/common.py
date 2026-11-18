@@ -292,7 +292,8 @@ class Backend:
         self.policy, self.stored_config = stored_policy(self.con, self.matcher_version)
         t = time.perf_counter()
         embedder = None
-        if os.environ.get("BIZGRAPH_EMBEDDER", "").lower() == "auto":
+        # Semantic path ON by default (local MiniLM, no API); BIZGRAPH_EMBEDDER=off disables it.
+        if os.environ.get("BIZGRAPH_EMBEDDER", "auto").lower() not in ("off", "0", "none", "false"):
             from bizgraph.resolution import Embedder
             embedder = Embedder.load()
         self.matcher, self.index_origin = make_matcher(self.store, self.policy, embedder)

@@ -22,13 +22,15 @@ from common import CHAIN_EXAMPLES, Backend, today  # noqa: E402
 
 st.set_page_config(page_title="AU/NZ business graph", layout="wide")
 PAGES = ["Resolve", "Entity", "Traversals", "Abstentions", "Projection"]
+# (button label, text sent to resolve)
 EXAMPLES = [
-    "Commonwealth Bank of Australia",
-    "Commonwealth Superannuation Corporation",
-    "Commonwealth Bank of Aust ABN 48 123 123 124",
-    "AMP Capital",
-    "Bluegum Trust",
-    "Vacaciones eDreams",
+    ("CBA", "Commonwealth Bank of Australia"),
+    ("CSC (near-name trap)", "Commonwealth Superannuation Corporation"),
+    ("CBA + ABN", "Commonwealth Bank of Aust ABN 48 123 123 124"),
+    ("Rio Tinto plc (foreign)", "Rio Tinto plc"),
+    ("AMP Capital", "AMP Capital"),
+    ("Bluegum Trust", "Bluegum Trust"),
+    ("eDreams (not in graph)", "Vacaciones eDreams"),
 ]
 
 
@@ -105,7 +107,13 @@ def header(b: Backend) -> None:
     st.markdown('<div class="eyebrow">Case study demo</div>', unsafe_allow_html=True)
     st.title("AU/NZ Business Graph")
     mode = "trimmed demo bundle" if b.is_bundle else "full eval snapshot"
+    sem = "on (local MiniLM)" if b.matcher.embedder else "off"
     st.markdown(
+        f"Entity resolution over ABR, ASIC, GLEIF and ACCC registers. Matcher `{b.matcher_version}` · "
+        f"semantic path {sem} · precision first: it abstains rather than guess."
+    )
+    with st.expander("What is real and what is reduced in this demo"):
+        st.markdown(
         f"**Real:** {mode} `{b.db_path.name}` (read-only DuckDB), matcher decisions of `{b.matcher_version}`, "
         f"graph queries over {b.endpoint_desc}, live `resolve` with the stored threshold policy. "
         f"**Stubbed or reduced:** semantic (embedding) path "
@@ -117,9 +125,9 @@ def header(b: Backend) -> None:
            "time against the same graphs, others run slowly on rdflib; " if not b.fuseki_url else "")
         + "ACCC notices are the 20-row register extract; licence end dates are bounds from register snapshot diffs, "
           "not true dates; no person-level director data."
-    )
-    if b.live_version != b.matcher_version:
-        st.caption(f"Live resolve runs code version `{b.live_version}`; stored links and abstentions are from "
+        )
+        if b.live_version != b.matcher_version:
+            st.caption(f"Live resolve runs code version `{b.live_version}`; stored links and abstentions are from "
                    f"`{b.matcher_version}` (set BIZGRAPH_MATCHER_VERSION to pick another stored version).")
 
 
@@ -219,8 +227,8 @@ def page_resolve(b: Backend) -> None:
     st.header("Resolve")
     st.caption("Search a business name or identifier, then inspect the evidence behind the decision.")
     cols = st.columns(len(EXAMPLES), gap="small")
-    for c, ex in zip(cols, EXAMPLES):
-        if c.button(ex, width="stretch"):
+    for c, (label, ex) in zip(cols, EXAMPLES):
+        if c.button(label, width="stretch", help=ex):
             st.session_state["resolve_text"] = ex
     text = st.text_input("Name, optionally with ABN / ACN / LEI / licence number", key="resolve_text")
     if not text.strip():
