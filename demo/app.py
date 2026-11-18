@@ -43,7 +43,7 @@ def inject_styles() -> None:
            variable name used throughout; it now holds the darker orange for readable text on white. */
         :root { --ink:#112337; --muted:#585E6A; --teal:#C14905; --accent:#F15B06; --purple:#9C72DC;
                 --navy:#112337; --line:#E4E7EC; --soft:#F2F3F5; }
-        div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"] { border-bottom-color: var(--accent) !important; }
+        div[data-testid="stButtonGroup"] button[aria-checked="true"] { border-bottom-color: var(--accent) !important; }
         div[data-testid="stHorizontalBlock"] button[kind="secondary"] { border-radius: 999px; }
         a { color: var(--teal); }
         /* legibility: darker body, caption and label text */
@@ -55,7 +55,7 @@ def inject_styles() -> None:
             color: var(--muted) !important; font-weight: 600; font-size: 1rem; padding: .7rem 1.1rem; margin-bottom: -2px;
             border-bottom: 3px solid transparent !important; box-shadow: none !important; }
         div[data-testid="stButtonGroup"] button:hover { color: var(--teal) !important; }
-        div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"] { color: var(--teal) !important; border-bottom-color: var(--teal) !important; }
+        div[data-testid="stButtonGroup"] button[aria-checked="true"] { color: var(--teal) !important; border-bottom-color: var(--teal) !important; }
         /* sidebar table of contents */
         [data-testid="stSidebar"] .toc-title { font-size: .8rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 .4rem; }
         [data-testid="stSidebar"] .toc-current { font-weight: 700; color: var(--teal); padding: .35rem 0; border-left: 3px solid var(--teal); padding-left: .6rem; }
