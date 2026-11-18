@@ -31,7 +31,7 @@
 
 ## 6. Scale
 - First to break: **Python feature extraction** in the matcher (39 s of 147 s for 60k GLEIF records), then **the triple store** (TDB2 at billions of triples), then single-writer DuckDB for concurrent loads.
-- Path: vectorised feature extraction in SQL, sharded blocking by block key, and a distributed graph store, keeping DuckDB/Parquet as the system of record. Cost is not the constraint: about USD 0.01 per 1,000 resolutions on an assumed USD 0.20/hour instance, embeddings local, API spend USD 0 (outputs/performance.md).
+- Path: vectorised feature extraction in SQL, sharded blocking by block key, and a distributed graph store, keeping DuckDB/Parquet as the system of record. Cost is not the constraint: about USD 0.01 to 0.02 per 1,000 resolutions (v4 p50 285 ms) on an assumed USD 0.20/hour instance, embeddings local, API spend USD 0 (outputs/performance.md).
 
 ## 7. Licence
 - **TGA ARTG**: personal or internal use only, no commercial use without permission. **annualreports.com**: no reuse licence. Neither used.

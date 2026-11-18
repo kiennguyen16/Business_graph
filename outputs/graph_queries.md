@@ -1,5 +1,11 @@
 # Graph queries
 
+> **Version note.** Measured on the v3 store (`m-94f4f6b2`). Ownership edges come from GLEIF and do not
+> depend on the matcher, so chains, depths and runtimes hold for the final v4 (`m-b5e50f74`). One
+> difference: the single loop in section 1.2 (Hudson Superfund, two GLEIF records resolved to the same
+> party) is reported by v4 as `IDENTITY_COLLAPSE` rather than `CYCLE`; genuine cycles still stop with the
+> loop path as described.
+
 Ultimate parent, the graph-only questions, traversal caps and the selection-criteria projection, with
 query text, results on the final data, runtimes and what the traversal does when an ownership chain
 cycles. Every number below was measured on 2026-11-18 against the full v3 store.
