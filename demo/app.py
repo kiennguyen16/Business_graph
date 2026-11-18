@@ -39,7 +39,13 @@ def inject_styles() -> None:
         """
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        :root { --ink:#102A43; --muted:#334E68; --teal:#007A7A; --navy:#102A43; --line:#BCCCDC; --soft:#F0F4F8; }
+        /* Palette after firmable.ai (navy ink, orange accent, purple secondary, Inter). --teal is the accent
+           variable name used throughout; it now holds the darker orange for readable text on white. */
+        :root { --ink:#112337; --muted:#585E6A; --teal:#C14905; --accent:#F15B06; --purple:#9C72DC;
+                --navy:#112337; --line:#E4E7EC; --soft:#F2F3F5; }
+        div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"] { border-bottom-color: var(--accent) !important; }
+        div[data-testid="stHorizontalBlock"] button[kind="secondary"] { border-radius: 999px; }
+        a { color: var(--teal); }
         /* legibility: darker body, caption and label text */
         p, li, label, [data-testid="stMarkdownContainer"] { color: var(--ink); }
         [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { color: var(--muted) !important; }
