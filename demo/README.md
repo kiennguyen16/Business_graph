@@ -188,3 +188,49 @@ licensed entities sharing a group with a flagged entity (TP ICAP and Citigroup g
 chain ending in CYCLE (left out of every group, see `outputs/graph_queries.md`), 49 neighbours of
 Macquarie Group at 2 hops, and 0 projection rows (ACCC half 5 parties, AFSL-cancelled half 198, none
 in common).
+
+## Re-recording the walkthrough
+
+Run this from the repository root after installing Playwright and its Chromium browser in `.venv`.
+
+```powershell
+.venv/Scripts/python.exe demo/record_walkthrough.py
+```
+
+The recorder writes to `deploy/video/`. It exports MP4 when ffmpeg is available and keeps the WebM otherwise.
+
+## Re-recording the narrated walkthrough
+
+From the repository root, with Playwright Chromium installed and ffmpeg on PATH, run:
+
+```powershell
+.venv/Scripts/python.exe -B demo/record_walkthrough_vo.py
+```
+
+Install `python-dotenv` and `PyYAML` in the virtual environment. For local narration, also
+install `kokoro` and `soundfile`. Kokoro downloads its open model on the first run.
+Use `--engine kokoro` to force local narration. `KOKORO_VOICE` defaults to `bf_emma`
+and `KOKORO_SPEED` controls the speaking pace.
+
+To use ElevenLabs, put the following in the Git-ignored `.env` at the repository root:
+
+```dotenv
+ELEVENLABS_API_KEY=your_key_here
+ELEVENLABS_VOICE_ID=JBFqnCBsd6RMkjVDRZzb
+ELEVENLABS_MODEL_ID=eleven_multilingual_v2
+```
+
+The voice and model settings are optional. The default command uses ElevenLabs when
+the key is present in the environment or `.env`. Use `--engine elevenlabs` to select it explicitly.
+See the [ElevenLabs text-to-speech documentation](https://elevenlabs.io/docs/eleven-api/guides/cookbooks/text-to-speech/).
+
+If Kokoro is unavailable on Windows, install `piper-tts`, download an English voice
+with `python -m piper.download_voices en_GB-alan-medium` from `deploy/video/`, set
+`PIPER_VOICE_MODEL` to the absolute path of the downloaded `.onnx` file, and run
+the recorder from the repository root with `--engine piper`. Keep the voice's
+`.onnx.json` next to its `.onnx` file.
+
+Edit the voiceover in `demo/narration.yaml`. The recorder measures each narration clip,
+leaves time to read each result, and writes `walkthrough_voiceover.mp4` and
+`walkthrough_voiceover.srt` under `deploy/video/`. The captions are a separate track
+you can load in a video player.

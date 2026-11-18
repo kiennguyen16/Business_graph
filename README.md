@@ -1,71 +1,27 @@
-# Business_graph: AU/NZ market graph
+# Business graph
 
-An ontology, a resolved entity graph and an agent-callable lookup over Australian and New
-Zealand business registers. DuckDB is the system of record; Apache Jena Fuseki (TDB2) holds a
-derived, rebuildable RDF view; matching runs in DuckDB + Python with two named paths (exact
-identifiers, names) and abstains rather than guess.
+AU/NZ business entity graph. DuckDB is the system of record and Jena TDB2 is a rebuildable RDF view. Final matcher: `m-b5e50f74-d37e44c6`.
 
-> Status: work in progress. Sections marked TODO are filled in as the pipeline finishes.
+Demo: https://kien-nguyen-graph.streamlit.app/ (Streamlit Community Cloud free tier sleeps; first load about 60 seconds). The two-minute narrated walkthrough is attached to the submission email and linked from the release, not in git.
 
-- Demo URL: TODO
-- Write-up: [`WRITEUP.md`](WRITEUP.md) (TODO)
-- Ontology: [`ontology/schema.ttl`](ontology/schema.ttl), [`ontology/shapes.ttl`](ontology/shapes.ttl), [`ontology/NOTES.md`](ontology/NOTES.md)
-- Plan and design: [`PLAN.md`](PLAN.md), [`ARCHITECTURE.md`](ARCHITECTURE.md)
-
-## Run it
-
-### Prerequisites
-- Python 3.11+ (developed on 3.12), Git Bash on Windows or any POSIX shell.
-- Java 17+ for Jena/Fuseki. `tools/` (git-ignored) holds a portable JDK 21 and Jena/Fuseki 5.5.0;
-  `scripts/_java.sh` finds them. A system Java 8 will not work.
-
+## Fast path
 ```bash
-python -m venv .venv && .venv/Scripts/python -m pip install -e ".[dev]"   # .venv/bin on Linux/macOS
-.venv/Scripts/python -m pytest -q                                          # unit + contract tests
+pip install -e ".[dev]"
+streamlit run demo/app.py
 ```
+The app downloads the 24 MB demo bundle release automatically. `bizgraph resolve "<text>"` runs on the bundle. Tests use `.venv/Scripts/python -m pytest -q -p no:cacheprovider tests --ignore=tests/independent/test_resolution_contract.py`.
 
-### Fast path (under 10 minutes): the demo bundle
-TODO: download / build the trimmed demo bundle and `streamlit run demo/app.py`.
+## Full pipeline
+Run `scripts/run_pipeline.sh`. Measured timings in [`outputs/performance.md`](outputs/performance.md): ABR 376.44 s, ASIC company 448.95 s, canonical build 135.08 s, match-all 211.25 s, export 93.74 s, TDB2 load 348.35 s.
 
-### Full pipeline (about 45 minutes, about 2 GB download)
-TODO: `scripts/run_pipeline.sh` with measured per-step timings. Steps:
-1. Download sources into `data/raw/` (URLs in [`outputs/sources.md`](outputs/sources.md)).
-2. `bizgraph ingest <source> <path>` per source (ABR uses `--workers N --tier2-allowlist`).
-3. `bizgraph build-canonical`
-4. Licence history (`src/bizgraph/pipeline/licence_history.py`)
-5. `bizgraph match-all`
-6. `scripts/fuseki.sh` then `bizgraph publish --all` and `bizgraph validate-shacl`
+## Sources and slice
+ABR and ASIC company are the tier 1 backbone. Used tier 2 sources are ASIC AFS, credit, banned organisations, liquidators, and GLEIF L1/L2; ACCC is a 20-notice tier 3 sample. TGA and annualreports.com were skipped because commercial reuse is not permitted or licensed. Wikidata was not used; it was not worth the hour given the gates. The slice is active ABRs in WA and TAS (1,023,265), plus Tier 2/3 references and required GLEIF relationships.
 
-## Sources
+## Final results
+V4 has 59,577 links and 12,332 abstentions. On 463 labels it made 0 wrong links: 100% precision and 93.2% recall over 308 in-graph records. The rehearsal sets were 100% precision with recall 79.8% (150/188) and 80.9% (152/188).
 
-| Source | Tier | Used | Why / notes |
-|---|---|---|---|
-| ABR bulk extract | 1 | Yes | Identity backbone (ABN, names, entity type, state). **Has no ANZSIC**, despite the brief. |
-| ASIC company register | 1 | Yes | ACN, status, former names (one row per name). Foreign bodies carry ARBNs, not ACNs. |
-| ASIC AFS licensee | 2 | Yes | 99.5% carry ABN or ACN. Current licences only: cancellations come from snapshot diffs. |
-| ASIC credit licensee | 2 | Yes | 98.3% ABN or ACN. |
-| ASIC banned and disqualified orgs | 2 | Yes | 15 rows, all with ACN; strict threshold. |
-| ASIC liquidators | 2 | Yes | People; never linked on a name alone. Firms kept as unresolved counterparties. |
-| GLEIF L1 + L2 | 2 | Yes | LEI, registration numbers, ownership; slice follows foreign parents to the real top. |
-| ACCC infringement notices | 3 | Sample (20) | Register blocks automated clients; 20 latest notices collected via a browser, robots.txt respected. |
-| TGA ARTG | 3 | No | Licence forbids commercial use without permission. |
-| annualreports.com | 3 | No | No reuse licence; robots.txt disallows the PDFs. |
-| Wikidata | any | No | Not worth the hour for this slice: TODO justify or use. |
-
-Licence review with quotes: [`outputs/sources.md`](outputs/sources.md). Identifier coverage:
-[`outputs/identifier_coverage.md`](outputs/identifier_coverage.md).
-
-## Slice
-
-ABR active ABNs in **WA and TAS** (1,023,265 entities), **plus** every ABR entity referenced by a
-valid ABN or ACN in any Tier 2 source, in any state (about 52k; this keeps the brief's
-Commonwealth Bank test case in the graph), plus 35 entities pulled in as evidence for ACN
-conflicts. Each party records its `slice_reason`. ANZSIC slicing was not possible (see above).
+## Outputs
+[`links.jsonl`](outputs/links.jsonl), [`abstentions.jsonl`](outputs/abstentions.jsonl), [`evaluation.md`](outputs/evaluation.md), [`resolve_results.jsonl`](outputs/resolve_results.jsonl), [`load_report.csv`](outputs/load_report.csv), [`graph_queries.md`](outputs/graph_queries.md), [`performance.md`](outputs/performance.md), [`sources.md`](outputs/sources.md), [`identifier_coverage.md`](outputs/identifier_coverage.md), and [`rehearsal/REHEARSAL.md`](outputs/rehearsal/REHEARSAL.md).
 
 ## Known gaps
-
-- `dirty_references.jsonl` (200 rows) was referenced by the brief but not supplied. TODO.
-- AFSL history comes from Wayback captures with an 8-month gap (2026-02-24 to 2026-11-02), so most
-  "cancelled in the last 3 months" dates are bounds, not days.
-- ACCC is a 20-notice sample; the register shows no penalty amounts.
-- TODO: anything else broken, named here rather than left for you to find.
+`dirty_references.jsonl` was not supplied, so `resolve_results.jsonl` is from our 200-row rehearsal set. AFSL history has an 8-month Wayback gap. ACCC is a 20-notice sample with no penalty amounts on the register. GLEIF foreign branches linked to the AU head company is a modelling choice. Recall on messy free text is about 80%. Docker on Hugging Face is paid, so the Docker image is the local fallback via `docker compose up`.

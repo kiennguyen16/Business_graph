@@ -25,3 +25,6 @@ demo/bundle/
 deploy/
 demo/precompute.err
 demo/precompute.log
+
+# local secrets (e.g. ELEVENLABS_API_KEY)
+.env

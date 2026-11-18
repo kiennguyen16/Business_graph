@@ -470,6 +470,19 @@ def build_parser() -> argparse.ArgumentParser:
     ).set_defaults(func=cmd_build_canonical)
 
     sub.add_parser("stats", help="row counts per table and per source").set_defaults(func=cmd_stats)
+    exd = sub.add_parser("export-decisions", help="export matcher links and abstentions as JSONL")
+    exd.add_argument("--version", required=True)
+    exd.add_argument("--out", default="outputs")
+    exd.add_argument("--full-evidence", action="store_true",
+                     help="keep every evidence field (large; default drops empty/false values)")
+    def _export_decisions(args):
+        from bizgraph.exports import export_decisions
+        with _ro_store(args) as store:
+            links, abstentions = export_decisions(store, args.version, args.out,
+                                                  compact=not args.full_evidence)
+        print(f"wrote {links} links and {abstentions} abstentions to {args.out}")
+        return 0
+    exd.set_defaults(func=_export_decisions)
     sub.add_parser("fuseki-ping", help="check Fuseki is reachable").set_defaults(func=cmd_fuseki_ping)
     _add_rdf_commands(sub)
     _add_service_commands(sub)

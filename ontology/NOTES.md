@@ -1,6 +1,6 @@
 # Ontology notes
 
-`schema.ttl` (OWL, `bg:` = `https://w3id.org/bizgraph/ont#`), `shapes.ttl` (SHACL), `examples.ttl` (synthetic data, one deliberate violation), tests in `tests/test_ontology.py`.
+`schema.ttl` (OWL, `bg:` = `https://w3id.org/bizgraph/ont#`), `shapes.ttl` (SHACL), `examples.ttl` (synthetic violation), tests in `tests/test_ontology.py`.
 
 ## 1. Five questions and the decisions they forced
 
@@ -19,7 +19,7 @@
 - **Graph layout:** one published snapshot graph per source (latest only: record IRIs are stable, so a union would give a record two `bg:snapshotDate` values), `urn:graph:derived:*` for facts inferred across snapshots (e.g. `licence_history`: ended licences as `urn:fact:{source}:{record_id}:ended:{event_date}` with NotBefore/NotAfter bounds), `urn:graph:canonical`, `urn:graph:links:{version}`, `urn:graph:ontology`.
 - **Facts point at records, not parties.** In a source graph a fact has `bg:aboutRecord <urn:src:...>`. Party roles (`bg:licensee`, `bg:bannedParty`, `bg:owner`, `bg:trustee`, ...) are shortcuts written to `urn:graph:links:{version}`, derived from links. Re-thresholding swaps one named graph; facts are never edited. SHACL rejects a role edge not backed by a link (or, for a counterparty named only by ACN/LEI, by identifier equality).
 - **Unresolved counterparty.** A relationship may name its counterparty only by `bg:counterpartyName` (500 of 660 liquidators name their firm this way). The fact is kept, but a name never backs a party role: `bg:affiliatedWith` is written only once the firm resolves through a link. This is the abstention principle applied to relationships.
-- **Identifiers are literals, not nodes:** a unique identifier node has degree 1 and adds only triples; the party IRI is minted from the strongest identifier. Party identifiers (`bg:abn`, `acn`, `arbn`, `arsn`, `nzbn`, `nzCompanyNumber`, `lei`) live on `bg:PartyOrRecord`: the record holds what the source asserted, the party what the canonical build chose. Licence and liquidator numbers (`bg:afslNumber`, `aclNumber`, `liquidatorNumber`) are **record-only**: they move between holders. Descriptive attributes share the `bg:PartyOrRecord` domain; `bg:leiRegistrationStatus` is kept apart from entity status (a DUPLICATE or ANNULLED LEI never supports `EXACT_LEI`).
+- **Identifiers are literals, not nodes:** the party IRI is minted from the strongest identifier. Party identifiers (`bg:abn`, `acn`, `arbn`, `arsn`, `nzbn`, `nzCompanyNumber`, `lei`) live on `bg:PartyOrRecord`: the record holds source assertions, the party the canonical choice. Licence and liquidator numbers are **record-only**. `bg:leiRegistrationStatus` is separate from entity status (a DUPLICATE or ANNULLED LEI never supports `EXACT_LEI`).
 - **`bg:relationshipStatus`** is the source's status as of the snapshot (GLEIF ACTIVE/INACTIVE), not validity time.
 
 ## 3. One party type or two

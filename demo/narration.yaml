@@ -1,0 +1,24 @@
+- id: intro
+  text: This business graph resolves messy company references in Australia and New Zealand, shows the evidence behind each decision, and abstains when it cannot establish identity.
+- id: cba
+  text: Commonwealth Bank of Australia resolves on its normalised name. Open the evidence to see the features, the decision gates, and the SQL that retrieved the candidate.
+- id: csc
+  text: Commonwealth Superannuation Corporation looks similar to the bank. The distinctive-token gate rejects the bank because its identifying words differ, even when semantic similarity is high.
+- id: abn
+  text: Here I use a shortened name with an ABN. The exact identifier takes precedence over name similarity and resolves the reference to the bank.
+- id: entity
+  text: From the match I can open the entity directly. This page brings together identifiers, source records, licences, and ownership relationships.
+- id: rio
+  text: Rio Tinto plc is a British company. The system abstains with jurisdiction mismatch instead of linking it to the Australian Rio Tinto Limited.
+- id: edreams
+  text: Vacaciones eDreams is outside this graph. The search returns no candidate, and the reference stays unlinked.
+- id: ban
+  text: A ban is a serious allegation. This M.A.I. Pacific record attaches by exact ACN. For name-only ban records, the threshold is a strict zero point nine seven.
+- id: notices
+  text: The ACCC notices for Dysck, trading as Neptune Blanket, attach through the company number printed on the register. That ties the notices to the registered entity.
+- id: traversal
+  text: The ownership traversal follows six hops from CSCAL Nominees to Citigroup Incorporated. It uses a hop limit and checks for cycles. GLEIF independently identifies the same ultimate parent.
+- id: abstentions
+  text: Abstentions are first-class records. I can filter by source and inspect why the matcher declined to link a notice or a banned organisation.
+- id: close
+  text: Precision-first matcher version four made zero wrong links across 463 hand labels and two rehearsal sets. The measured results are in the evaluation reports, and the code is on GitHub.
