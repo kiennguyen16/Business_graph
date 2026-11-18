@@ -9,6 +9,18 @@ from pathlib import Path
 
 from bizgraph.config import get_settings
 
+_BUNDLE_COMMANDS = {
+    "eval-sample", "evaluate", "export", "export-decisions", "project", "publish", "resolve",
+    "resolve-file", "validate-shacl",
+}
+
+
+def cmd_fetch_bundle(args: argparse.Namespace) -> int:
+    from bizgraph.bundle import ensure_demo_bundle
+
+    print(ensure_demo_bundle())
+    return 0
+
 
 def _store(args: argparse.Namespace):
     from bizgraph.store.duckdb_store import DuckDBStore
@@ -449,6 +461,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", help="DuckDB file (default: settings.db_path / BIZGRAPH_DB)")
     sub = p.add_subparsers(dest="command", required=True)
 
+    sub.add_parser("fetch-bundle", help="download and cache the demo bundle").set_defaults(func=cmd_fetch_bundle)
     sub.add_parser("init-db", help="create the DuckDB schema").set_defaults(func=cmd_init_db)
 
     ing = sub.add_parser("ingest", help="ingest one source file")
@@ -519,6 +532,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # Commands that build or update the store must keep using a local database.
+    uses_db = args.command in _BUNDLE_COMMANDS
+    if args.command == "project":
+        uses_db = bool(args.spec) and not (args.no_db or args.list)
+    elif args.command == "validate-shacl":
+        uses_db = not (args.from_fuseki or args.quarantine)
+    elif args.command == "publish":
+        uses_db = args.all or args.graph
+    if uses_db and args.db is None and not get_settings().db_path.exists():
+        from bizgraph.bundle import ensure_demo_bundle
+
+        args.db = str(ensure_demo_bundle())
+        print(f"Using demo bundle at {args.db}", file=sys.stderr)
     return args.func(args)
 
 

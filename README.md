@@ -4,12 +4,73 @@ AU/NZ business entity graph. DuckDB is the system of record and Jena TDB2 is a r
 
 Demo: https://kien-nguyen-graph.streamlit.app/ (Streamlit Community Cloud free tier sleeps; first load about 60 seconds). The two-minute narrated walkthrough is attached to the submission email and linked from the release, not in git.
 
-## Fast path
+## Run it
+
+From the repository root, create and activate a Python 3.11+ virtual environment.
+
+Windows PowerShell
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+Windows Git Bash
+
+```bash
+python -m venv .venv
+source .venv/Scripts/activate
+```
+
+Linux and macOS
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Then install the project, fetch the 24 MB demo bundle, and run a lookup.
+
 ```bash
 pip install -e ".[dev]"
+bizgraph fetch-bundle
+bizgraph resolve "Commonwealth Bank of Australia"
+```
+
+The lookup prints `RESOLVED: urn:abn:48123123124`.
+
+For optional semantic matching, install `pip install -e ".[semantic]"` before
+starting the app. The first start with that extra downloads the embedding model
+and takes about one minute.
+
+```bash
 streamlit run demo/app.py
 ```
-The app downloads the 24 MB demo bundle release automatically. `bizgraph resolve "<text>"` runs on the bundle. Tests use `.venv/Scripts/python -m pytest -q -p no:cacheprovider tests --ignore=tests/independent/test_resolution_contract.py`.
+
+Open [the demo](http://localhost:8501).
+
+Run the health check in a second terminal. It should print `ok`. In Windows
+PowerShell, use `curl.exe`.
+
+```bash
+curl -s http://localhost:8501/_stcore/health
+```
+
+Run the quick test suite from the activated environment. A clean checkout
+had 403 passed and 21 skipped in about 1 minute 25 seconds. Tests that require
+a local service or optional tools skip when those prerequisites are absent.
+
+```bash
+pytest -q -m "not slow"
+```
+
+Run the full review suite separately. A clean checkout had 446 passed and
+79 skipped in about 2 minutes 20 seconds. With local raw data and tools,
+allow about 3 to 4 minutes.
+
+```bash
+pytest -q tests --ignore=tests/independent/test_resolution_contract.py
+```
 
 ## Full pipeline
 Run `scripts/run_pipeline.sh`. Measured timings in [`outputs/performance.md`](outputs/performance.md): ABR 376.44 s, ASIC company 448.95 s, canonical build 135.08 s, match-all 211.25 s, export 93.74 s, TDB2 load 348.35 s.

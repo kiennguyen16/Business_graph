@@ -23,12 +23,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from bizgraph.config import get_settings
 from bizgraph.domain.models import IdScheme, PartyType
 from bizgraph.sources.adapters import tier2
 from bizgraph.sources.base import RejectRecord
 
 REPO = Path(__file__).resolve().parents[2]
-RAW = REPO / "data" / "raw"
+RAW = get_settings().raw_dir
 SNAP = date(2026, 11, 16)
 FILES = {
     "asic_afsl": RAW / "asic_afsl" / "afs_lic_202611.csv",
@@ -48,9 +49,10 @@ ADAPTERS = {
 }
 COMPANY_ZIP = RAW / "asic_company" / "company_202611.zip"
 
-pytestmark = pytest.mark.skipif(
-    not all(p.exists() for p in FILES.values()), reason="real Tier 2 raw files not present"
-)
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(not all(p.is_file() for p in FILES.values()), reason="real Tier 2 raw files not present"),
+]
 
 # ------------------------------------------------------------------ independent validators
 

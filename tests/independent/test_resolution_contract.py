@@ -51,7 +51,14 @@ from bizgraph.resolution import (  # noqa: E402
     ThresholdPolicy,
 )
 
-os.environ.setdefault("BIZGRAPH_EMBEDDINGS", "0")
+pytestmark = pytest.mark.slow
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _embedding_environment():
+    with pytest.MonkeyPatch.context() as env:
+        env.setenv("BIZGRAPH_EMBEDDINGS", os.environ.get("BIZGRAPH_EMBEDDINGS", "0"))
+        yield
 
 EXACT_ID_TYPES = {"EXACT_ABN", "EXACT_ACN", "EXACT_LEI", "EXACT_LICENCE_NO"}
 NAME_TYPES = {"NAME_NORMALISED_EXACT", "NAME_FUZZY", "NAME_SEMANTIC"}

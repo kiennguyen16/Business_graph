@@ -18,7 +18,9 @@ def _env_path(name: str, default: Path) -> Path:
 class Settings:
     data_dir: Path = field(default_factory=lambda: _env_path("BIZGRAPH_DATA_DIR", REPO_ROOT / "data"))
     db_path: Path = field(
-        default_factory=lambda: _env_path("BIZGRAPH_DB", REPO_ROOT / "data" / "bizgraph.duckdb")
+        default_factory=lambda: _env_path(
+            "BIZGRAPH_DB", _env_path("BIZGRAPH_DATA_DIR", REPO_ROOT / "data") / "bizgraph.duckdb"
+        )
     )
     fuseki_url: str = field(default_factory=lambda: os.environ.get("FUSEKI_URL", "http://localhost:3030"))
     fuseki_dataset: str = field(default_factory=lambda: os.environ.get("FUSEKI_DATASET", "bizgraph"))

@@ -22,12 +22,11 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO / "src") not in sys.path:
     sys.path.insert(0, str(REPO / "src"))
 
+from bizgraph.bundle import DEFAULT_BUNDLE_URL, demo_bundle_dir, ensure_demo_bundle
+
 DEMO_DIR = Path(__file__).resolve().parent
-BUNDLE_DIR = Path(os.environ.get("BIZGRAPH_BUNDLE_DIR", DEMO_DIR / "bundle"))
+BUNDLE_DIR = demo_bundle_dir()
 BUNDLE_DB = BUNDLE_DIR / "demo.duckdb"
-DEFAULT_BUNDLE_URL = (
-    "https://github.com/kiennguyen16/Business_graph/releases/download/demo-bundle-v4/demo_bundle.tar.gz"
-)
 BUNDLE_RDF = BUNDLE_DIR / "rdf"
 SNAPSHOT_DB = REPO / "data" / os.environ.get("BIZGRAPH_SNAPSHOT", "snap_v3_demo.duckdb")
 DEFAULT_MATCHER_VERSION = "m-b5e50f74-d37e44c6"  # v4
@@ -53,9 +52,7 @@ GRAPH_SOURCES = ("asic_afsl", "asic_credit", "asic_banned_org", "asic_liquidator
 
 
 def ensure_bundle() -> str | None:
-    """Fetch the demo bundle when it is not on disk and BIZGRAPH_BUNDLE_URL points at a tarball of
-    it (`tar -czf bizgraph_demo_bundle.tar.gz -C demo bundle`, published e.g. as a release asset).
-    Used on hosts that build from git, where demo/bundle/ is not committed."""
+    """Use a local snapshot if available unless a bundle URL was configured."""
     if BUNDLE_DB.exists():
         return None
     url = os.environ.get("BIZGRAPH_BUNDLE_URL")
@@ -66,22 +63,10 @@ def ensure_bundle() -> str | None:
             url = st.secrets.get("BIZGRAPH_BUNDLE_URL")
         except Exception:
             url = None
-    if not url and not SNAPSHOT_DB.exists():
-        url = DEFAULT_BUNDLE_URL  # public release asset; lets a fresh clone run with no setup
-    if not url:
+    if not url and SNAPSHOT_DB.exists():
         return None
-    import tarfile
-    import tempfile
-    import urllib.request
-
-    BUNDLE_DIR.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory() as tmp:
-        archive = Path(tmp) / "bundle.tar.gz"
-        urllib.request.urlretrieve(url, archive)  # noqa: S310 (operator-supplied URL)
-        with tarfile.open(archive) as tf:
-            tf.extractall(BUNDLE_DIR.parent, filter="data")
-    if not BUNDLE_DB.exists():
-        raise RuntimeError(f"{url} did not contain bundle/demo.duckdb")
+    url = url or DEFAULT_BUNDLE_URL
+    ensure_demo_bundle(fallback_url=url)
     return f"downloaded from {url}"
 
 

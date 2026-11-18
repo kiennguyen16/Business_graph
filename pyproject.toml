@@ -37,3 +37,8 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+  "slow: long-running suites and checks excluded from the quick run",
+  "finding: regression check from an independent audit",
+  "register: cross-check against the full ASIC company register",
+]

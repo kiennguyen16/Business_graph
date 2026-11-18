@@ -23,13 +23,15 @@ from pathlib import Path
 
 import pytest
 
+from bizgraph.config import get_settings
 from bizgraph.domain.models import IdScheme, PartyType
 from bizgraph.sources.adapters import tier1
 from bizgraph.sources.adapters.tier1 import AbrAdapter, AsicCompanyAdapter
 from bizgraph.sources.base import RejectRecord
 
-REPO = Path(__file__).resolve().parents[2]
-RAW = REPO / "data" / "raw"
+RAW = get_settings().raw_dir
+ASIC_ZIP = RAW / "asic_company" / "company_202611.zip"
+ABR_ZIP = RAW / "abr" / "public_split_11_20.zip"
 SNAP = date(2026, 11, 16)
 REAL = pytest.mark.skipif(not os.environ.get("RUN_REAL"), reason="set RUN_REAL=1 for real-data checks")
 
@@ -562,12 +564,14 @@ def test_asic_hash_stable_and_independent_of_file_name(tmp_path):
 
 
 # ============================================================================ real data
+@pytest.mark.slow
 @REAL
+@pytest.mark.skipif(not ASIC_ZIP.is_file(), reason="real ASIC company ZIP not present")
 def test_real_asic_adjacency_and_record_count():
     """Every ACN appears in exactly one contiguous run, and the adapter emits one record per ACN."""
     import duckdb
 
-    z = RAW / "asic_company" / "company_202611.zip"
+    z = ASIC_ZIP
     with zipfile.ZipFile(z) as zf:
         name = next(n for n in zf.namelist() if n.lower().endswith(".csv"))
         tmp = Path(os.environ.get("TEMP", "/tmp")) / "bizgraph_audit_tier1"
@@ -587,12 +591,14 @@ def test_real_asic_adjacency_and_record_count():
     assert n_groups == distinct
 
 
+@pytest.mark.slow
 @REAL
+@pytest.mark.skipif(not ABR_ZIP.is_file(), reason="real ABR public split ZIP not present")
 def test_real_abr_sample_records_in_equals_raw_and_types_consistent():
     """First 50k records of Public15: nothing silently dropped, IND <-> LegalEntity <-> PERSON."""
     from lxml import etree
 
-    z = RAW / "abr" / "public_split_11_20.zip"
+    z = ABR_ZIP
     member = "20261111_Public15.xml"
     n = 50_000
 

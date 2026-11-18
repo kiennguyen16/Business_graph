@@ -402,6 +402,7 @@ def test_cba_csc_feature_vector_is_reported(store: DuckDBStore) -> None:
     assert fv.distinctive_extra == ["SUPERANNUATION"]
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(
     __import__("importlib").util.find_spec("sentence_transformers") is None,
     reason="sentence-transformers not installed",

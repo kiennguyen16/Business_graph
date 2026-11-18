@@ -430,6 +430,7 @@ def test_example_has_bracketed_cancellation(examples):
     assert str(examples.value(f, BG.validToNotAfter)) == "2026-10-12"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("name", sorted(MUTATIONS))
 def test_invariant_fires(name, examples, schema, shapes):
     ttl, focus = MUTATIONS[name]

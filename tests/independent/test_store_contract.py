@@ -389,6 +389,7 @@ def test_read_only_open_while_writer_open_other_process(tmp_path: Path) -> None:
 # ---------------------------------------------------------------- scale
 
 
+@pytest.mark.slow
 def test_scale_100k(store: DuckDBStore, capsys) -> None:
     recs = [
         rec(

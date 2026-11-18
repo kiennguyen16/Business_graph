@@ -216,13 +216,38 @@ def test_config_tdb2_location_overridable() -> None:
 
 
 def _bash() -> str | None:
-    for c in (r"C:\Program Files\Git\bin\bash.exe", shutil.which("bash")):
+    candidates = [shutil.which("bash")]
+    if os.name == "nt":
+        # System32 bash is the WSL launcher and cannot run the Git Bash fixtures.
+        candidates = [r"C:\Program Files\Git\bin\bash.exe", shutil.which("bash.exe")]
+    for c in candidates:
         if c and Path(c).exists():
-            return c
+            if Path(c).parent.name.lower() != "system32":
+                return c
     return None
 
 
-@pytest.mark.skipif(_bash() is None, reason="no bash")
+_loader_available = pytest.mark.skipif(
+    _bash() is None
+    or not any(
+        (jdk / "bin" / name).is_file()
+        for jdk in (REPO / "tools").glob("jdk-21*")
+        for name in ("java", "java.exe")
+    )
+    or not (REPO / "tools" / "apache-jena-5.5.0" / "lib").is_dir(),
+    reason="bulk loader requires Bash, the portable JDK and Apache Jena under tools/",
+)
+
+
+def _shell_path(path: Path) -> str:
+    if os.name != "nt":
+        return path.as_posix()
+    return subprocess.check_output(
+        [_bash(), "-c", 'cygpath -u "$1"', "_", path.as_posix()], text=True
+    ).strip()
+
+
+@_loader_available
 @pytest.mark.parametrize("loc_style", ["relative_to_cwd", "absolute_posix"])
 def test_bulk_load_into_temp_location(tmp_path: Path, loc_style: str) -> None:
     nq = tmp_path / "x.nq"
@@ -231,8 +256,7 @@ def test_bulk_load_into_temp_location(tmp_path: Path, loc_style: str) -> None:
     )
     work = tmp_path / "work"
     work.mkdir()
-    posix_tmp = subprocess.run([_bash(), "-c", f"cygpath -u '{tmp_path.as_posix()}'"], capture_output=True,
-                               text=True).stdout.strip()
+    posix_tmp = _shell_path(tmp_path)
     if loc_style == "relative_to_cwd":
         loc_env, expected = "tdb2rel", tmp_path / "tdb2rel"  # relative to the caller cwd (tmp_path)
     else:
@@ -256,7 +280,7 @@ def test_bulk_load_into_temp_location(tmp_path: Path, loc_style: str) -> None:
             pass  # reported, not removed (outside test scope)
 
 
-@pytest.mark.skipif(_bash() is None, reason="no bash")
+@_loader_available
 def test_bulk_load_triples_without_graph_is_refused(tmp_path: Path) -> None:
     """config.ttl sets tdb2:unionDefaultGraph true, so triples in the stored default graph would be
     invisible to plain queries. Contract: bulk_load.sh refuses triple formats without --graph."""
@@ -273,13 +297,12 @@ def test_bulk_load_triples_without_graph_is_refused(tmp_path: Path) -> None:
     assert not loc.exists()
 
 
-@pytest.mark.skipif(_bash() is None, reason="no bash")
+@_loader_available
 def test_bulk_load_with_graph_flag(tmp_path: Path) -> None:
     nt = tmp_path / "x.nt"
     nt.write_text('<urn:a> <urn:p> "1" .\n', encoding="utf-8")
     loc = tmp_path / "tdb2g"
-    posix = subprocess.run([_bash(), "-c", f"cygpath -u '{loc.as_posix()}'"], capture_output=True,
-                           text=True).stdout.strip()
+    posix = _shell_path(loc)
     env = {**os.environ, "TDB2_LOC": posix, "LOADER_XMX": "512m"}
     r = subprocess.run(
         [_bash(), (REPO / "scripts" / "bulk_load.sh").as_posix(), "--graph", "urn:graph:bl:g", "x.nt"],
