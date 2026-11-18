@@ -32,6 +32,37 @@ EXAMPLES = [
 ]
 
 
+def inject_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        :root { --ink:#102A43; --muted:#627D98; --teal:#00A6A6; --navy:#102A43; --line:#D9E2EC; --soft:#F0F4F8; }
+        html, body, [class*="css"] { font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+        .block-container { max-width: 1440px; padding-top: 2.2rem; padding-bottom: 3rem; }
+        h1, h2, h3 { color: var(--ink); letter-spacing: -0.025em; }
+        h1 { font-weight: 700; }
+        [data-testid="stSidebar"] { border-right: 1px solid var(--line); }
+        [data-testid="stSidebar"] > div:first-child { padding-top: 2rem; }
+        div[data-testid="stHorizontalBlock"] button { min-height: 2.8rem; border-radius: 999px; font-weight: 600; }
+        div[data-testid="stHorizontalBlock"] button[kind="secondary"] { border-color: var(--line); background: #fff; color: var(--navy); }
+        div[data-testid="stHorizontalBlock"] button[kind="secondary"]:hover { border-color: var(--teal); color: var(--teal); }
+        div[data-testid="stRadio"] > div { gap: .45rem; }
+        div[data-testid="stRadio"] label { border: 1px solid var(--line); border-radius: 999px; padding: .45rem .9rem; background: #fff; }
+        div[data-testid="stRadio"] label:has(input:checked) { border-color: var(--teal); background: #E6FFFA; color: var(--navy); }
+        div[data-testid="stRadio"] label p { font-weight: 600; }
+        [data-testid="stExpander"] { border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+        [data-testid="stDataFrame"] { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+        .status-badge { display:inline-flex; align-items:center; gap:.45rem; padding:.5rem .85rem; border-radius:999px; font-weight:700; font-size:.88rem; margin:.35rem 0 1rem; }
+        .status-resolved { color:#146C43; background:#D1FAE5; border:1px solid #A7F3D0; }
+        .status-abstained { color:#92400E; background:#FEF3C7; border:1px solid #FCD34D; }
+        .eyebrow { color:var(--teal); font-size:.78rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase; }
+        @media (prefers-color-scheme: dark) { .status-resolved { color:#A7F3D0; background:#064E3B; } .status-abstained { color:#FDE68A; background:#78350F; } }
+        </style>
+        """, unsafe_allow_html=True,
+    )
+
+
 @st.cache_resource(show_spinner="Loading store, matcher and graph (first load only)...")
 def backend() -> Backend:
     return Backend()
@@ -71,7 +102,8 @@ def entity_url(key: str | None) -> str | None:
 # --------------------------------------------------------------------------- header
 
 def header(b: Backend) -> None:
-    st.title("AU/NZ business graph")
+    st.markdown('<div class="eyebrow">Case study demo</div>', unsafe_allow_html=True)
+    st.title("AU/NZ Business Graph")
     mode = "trimmed demo bundle" if b.is_bundle else "full eval snapshot"
     st.markdown(
         f"**Real:** {mode} `{b.db_path.name}` (read-only DuckDB), matcher decisions of `{b.matcher_version}`, "
@@ -185,7 +217,8 @@ def party_names(b: Backend, keys: list[str]) -> dict[str, tuple[str, str]]:
 
 def page_resolve(b: Backend) -> None:
     st.header("Resolve")
-    cols = st.columns(len(EXAMPLES))
+    st.caption("Search a business name or identifier, then inspect the evidence behind the decision.")
+    cols = st.columns(len(EXAMPLES), gap="small")
     for c, ex in zip(cols, EXAMPLES):
         if c.button(ex, width="stretch"):
             st.session_state["resolve_text"] = ex
@@ -201,12 +234,14 @@ def page_resolve(b: Backend) -> None:
     thr = b.policy.threshold(info.get("source") or "", info.get("party_type_hint"))
 
     if decision.resolved:
-        st.success(f"RESOLVED to `{decision.canonical_key}` as **{decision.match_type}** "
+        st.markdown('<span class="status-badge status-resolved">● RESOLVED</span>', unsafe_allow_html=True)
+        st.success(f"`{decision.canonical_key}` as **{decision.match_type}** "
                    f"(confidence {decision.confidence}). {decision.explanation}")
         if st.button(f"Open entity {decision.canonical_key}"):
             goto("Entity", key=decision.canonical_key)
     else:
-        st.warning(f"ABSTAINED: **{decision.reason}**. {decision.explanation}")
+        st.markdown(f'<span class="status-badge status-abstained">● ABSTAINED · {decision.reason}</span>', unsafe_allow_html=True)
+        st.warning(decision.explanation)
     st.caption(f"{len(decision.ranked)} candidates, {ms:.0f} ms. Threshold for this reference {thr} "
                f"(type hint {info.get('party_type_hint')}), margin {b.policy.margin(info.get('source') or '')}.")
     with st.expander("How the text was parsed (the reference)"):
@@ -617,6 +652,7 @@ def page_projection(b: Backend) -> None:
 def main() -> None:
     t0 = time.perf_counter()
     b = backend()
+    inject_styles()
     header(b)
     ss = st.session_state
     if "page_radio" not in ss:  # first run of a session: honour ?page=...&key=... links
@@ -625,7 +661,8 @@ def main() -> None:
         ss["entity_key"] = ss["entity_target"] = st.query_params.get("key", "urn:abn:48123123124")
     if "nav_to" in ss:
         ss["page_radio"] = ss.pop("nav_to")
-    page = st.sidebar.radio("Page", PAGES, key="page_radio")
+    page = st.radio("Navigate", PAGES, key="page_radio", horizontal=True, label_visibility="collapsed")
+    st.sidebar.radio("Page", PAGES, key="page_radio_sidebar", index=PAGES.index(page), on_change=lambda: ss.update(page_radio=ss.page_radio_sidebar))
     st.sidebar.markdown(f"Store: `{b.db_path.name}`  \nMatcher: `{b.matcher_version}`  \n"
                         f"licence_event: {b.licence_event_origin}")
     st.sidebar.caption(f"Resolution index: {b.index_origin}")
