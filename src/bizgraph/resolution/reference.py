@@ -237,7 +237,21 @@ class ReferenceParser:
         (IdScheme.LEI, re.compile(r"\b(?:LEI" + _SEP + r")?([A-Z0-9]{18}\d{2})\b", re.IGNORECASE)),
     ]
     _BARE_ABN = re.compile(r"(?<!\d)(\d{2}\s?\d{3}\s?\d{3}\s?\d{3})(?!\d)")
-    _STATE = re.compile(r"[(\[]?\b(" + "|".join(_AU_STATES) + r")\b[)\]]?\s*\d{0,4}\s*$", re.IGNORECASE)
+    _STATE = re.compile(r"[(\[]?\b(" + "|".join(_AU_STATES) + r")\b[)\]]?(?:\s+(\d{4}))?\s*$",
+                        re.IGNORECASE)
+    _TOWN_ADDRESS = re.compile(r",\s*[a-z][a-z .'-]*,?\s*$", re.IGNORECASE)
+    _TOWN_AFTER_FORM = re.compile(
+        r"(\b(?:PTY(?:\s+(?:LTD|LIMITED))?|PROPRIETARY\s+(?:LTD|LIMITED)|LIMITED|LTD|NL|"
+        r"CORP(?:ORATION)?|P\s*/\s*L|PLC|INC|LLC)\.?)[,\s]+[a-z][a-z .'-]*,\s*$",
+        re.IGNORECASE,
+    )
+    _CAPITAL_ADDRESS = re.compile(
+        r"\s+(?:Perth|Hobart|Sydney|Melbourne|Brisbane|Adelaide|Canberra|Darwin),\s*$", re.IGNORECASE)
+    _DOMESTIC_SUFFIX = re.compile(
+        r"\b(?:PTY|LTD|LIMITED|NL|NO\s+LIABILITY|P\s*/\s*L)[.\s]*$", re.IGNORECASE)
+    _FOREIGN_FORM = re.compile(r"\b(?:PLC|INC|LLC|GMBH|AG|SA|NV|BV|SE|SPA|SAS|KK|BHD|PTE|AB|AS|OY|SRL)\b",
+                               re.IGNORECASE)
+    _NAME_CONNECTOR = re.compile(r"\b(?:TRADING\s+AS|T/AS|AS\s+TRUSTEES?\s+(?:FOR|OF))\b", re.IGNORECASE)
     # Unlabelled digit groups of 6+ digits (an ACN or phone number without a label) are never
     # identifiers and never name tokens.
     _DIGIT_GROUP = re.compile(r"(?<![\w])\d(?:[ ]?\d){5,}(?![\w])")
@@ -285,20 +299,31 @@ class ReferenceParser:
         for s, e in sorted(spans, reverse=True):
             work = work[:s] + " " + work[e:]
         state = None
+        postcode = None
         work = self._DIGIT_GROUP.sub(" ", work)
         m = self._STATE.search(work)
-        if m:
+        # Bare SA can be a foreign legal form. An explicit domestic suffix before it
+        # marks the end of the company name, as do the address delimiters below.
+        if m and (m.group().strip().upper() != "SA" or "," in work[:m.start()]
+                  or self._DOMESTIC_SUFFIX.search(work[:m.start()])):
             state = m.group(1).upper()
+            postcode = m.group(2)
             work = work[: m.start()]
+            work = self._TOWN_AFTER_FORM.sub(r"\1", work)
+            work = self._CAPITAL_ADDRESS.sub("", work)
+            work = self._TOWN_ADDRESS.sub("", work)
         name = re.sub(r"\s+", " ", self._JUNK.sub("", work)).strip(" ,;")
         name = re.sub(r"\s*,\s*$", "", name)
         hint = self._party_type(name)
+        legal_name_text = self._NAME_CONNECTOR.sub(" ", name)
         return Reference(
             name_raw=name or None,
             normalised=_normalise(self.names, name, hint) if name else None,
             identifiers=tuple(ids),
             party_type_hint=hint,
             state=state,
+            postcode=postcode,
+            jurisdiction="non-AU" if self._FOREIGN_FORM.search(legal_name_text) else None,
             source=source,
             record_id=record_id,
             state_basis="text",

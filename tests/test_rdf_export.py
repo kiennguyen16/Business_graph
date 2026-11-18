@@ -721,6 +721,20 @@ def test_published_set_passes_shacl(store, tmp_path):
 
 
 def test_asic_company_published_only_when_referenced(store, tmp_path):
+    # Exercise each independent inclusion path, including a trustee with no ACN column.
+    references = {"999999991", "999999992", "999999993", "999999994", "999999995", "999999996"}
+    store.records.upsert([
+        _rec("asic_company", acn, "REFERENCED COMPANY", ids=[(IdScheme.ACN, acn)])
+        for acn in sorted(references)
+    ] + [
+        _rec("asic_afsl", "scope-afsl", ids=[(IdScheme.ACN, "999999992")]),
+        _rec("accc_notice", "scope-notice", ids=[(IdScheme.ACN, "999999993")]),
+        _rec("gleif_l1", "scope-trust", payload={"trustee_acn": "999999994"}),
+    ])
+    store.execute("UPDATE party_canonical SET asic_record_id = '999999991' WHERE acn = ?", [SCA_ACN])
+    store.execute("INSERT INTO identifier VALUES (?, 'acn', '999999995')", [f"urn:abn:{SCA_ABN}"])
+    store.execute("INSERT INTO quarantine (source, record_id, invariant) VALUES "
+                  "('asic_company', '999999996', 'ACN_MULTIPLE_ABN')")
     store.records.upsert([_rec("asic_company", "999999990", "UNRELATED HOLDINGS PTY LTD",
                                ids=[(IdScheme.ACN, "999999990")])])
     g = NamedGraph.source_snapshot("asic_company", SNAP)
@@ -731,3 +745,5 @@ def test_asic_company_published_only_when_referenced(store, tmp_path):
     assert (kept, RDF.type, URIRef(BG + "SourceRecord")) in trimmed
     assert (other, None, None) not in trimmed
     assert (other, RDF.type, URIRef(BG + "SourceRecord")) in full
+    for acn in references:
+        assert (URIRef(f"urn:src:asic_company:{acn}"), RDF.type, URIRef(BG + "SourceRecord")) in trimmed

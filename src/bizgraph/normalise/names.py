@@ -49,12 +49,14 @@ GENERIC_TOKENS: frozenset[str] = frozenset(
     GROUP HOLDINGS HOLDING SERVICES SERVICE SOLUTIONS MANAGEMENT ENTERPRISES ENTERPRISE
     INVESTMENTS INVESTMENT NOMINEES NOMINEE TRUST TRUSTEE TRUSTEES PARTNERS PARTNERSHIP
     CAPITAL FINANCIAL FINANCE CONSULTING CONSULTANTS INDUSTRIES INDUSTRY TRADING
-    PTY LTD LIMITED INC CORP CO NL PLC LLC
+    PTY LTD LIMITED INC CORP CORPORATION CO NL PLC LLC
     """.split()
 )
 
 _PUNCT = re.compile(r"[^\w\s/]")
 _SPACE = re.compile(r"\s+")
+_PROPRIETARY_LIMITED = re.compile(r"\bP\s*/\s*L\b")
+_CORPORATION = re.compile(r"\bCORP\b")
 
 
 # External-administration status appended to registered names, e.g.
@@ -151,6 +153,8 @@ class NameNormaliser:
             return None
         truncated = raw.rstrip().endswith("*")
         text = self._clean(raw)
+        text = _PROPRIETARY_LIMITED.sub("PTY LTD", text)
+        text = _CORPORATION.sub("CORPORATION", text)
 
         status_suffix = None
         m = _STATUS_SUFFIX.search(text)

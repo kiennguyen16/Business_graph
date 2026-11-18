@@ -92,6 +92,14 @@ CREATE TABLE IF NOT EXISTS identifier (
     PRIMARY KEY (scheme, value)
 );
 
+CREATE TABLE IF NOT EXISTS party_key_registry (
+    scheme        VARCHAR NOT NULL,
+    value         VARCHAR NOT NULL,
+    canonical_key VARCHAR NOT NULL,
+    minted_at     TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (scheme, value)
+);
+
 CREATE TABLE IF NOT EXISTS quarantine (
     source      VARCHAR NOT NULL,
     record_id   VARCHAR NOT NULL,

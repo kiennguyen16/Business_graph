@@ -18,17 +18,25 @@ RUN apt-get update \
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch \
+ && pip install --no-cache-dir . sentence-transformers
 COPY ontology ./ontology
 COPY demo ./demo
+
+ENV HF_HOME=/opt/huggingface \
+    SENTENCE_TRANSFORMERS_HOME=/opt/huggingface/sentence_transformers
+RUN mkdir -p "$HF_HOME" \
+ && python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device='cpu')"
 
 ENV PYTHONUNBUFFERED=1 \
     FUSEKI_HOME=/opt/fuseki \
     BIZGRAPH_DB=/app/demo/bundle/demo.duckdb \
+    BIZGRAPH_EMBEDDER=auto \
+    BIZGRAPH_EMBEDDINGS=1 \
     BIZGRAPH_MEMORY_LIMIT=1GB \
     PORT=7860
 # Non-root user (Hugging Face Spaces runs containers as uid 1000)
-RUN useradd -m -u 1000 app && mkdir -p /data && chown -R app /data /app
+RUN useradd -m -u 1000 app && mkdir -p /data && chown -R app /data /app /opt/huggingface
 USER app
 VOLUME ["/data"]
 EXPOSE 7860 3030

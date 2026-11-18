@@ -45,6 +45,38 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
+
+def matcher_read_only(store, policy, embedder="auto", version_label="m"):
+    """Construct Matcher without writing derived indexes to a read-only DuckDB file."""
+    import types
+    from bizgraph.resolution import Matcher
+    from bizgraph.resolution.candidates import NameIndex
+    import bizgraph.resolution.matcher as mm
+    fp = NameIndex(store.con)._fingerprint()
+    try:
+        row = store.con.execute("SELECT fingerprint FROM res_index_meta").fetchone()
+    except Exception:
+        row = None
+    if row and row[0] == fp:
+        class ReadOnlyIndex(NameIndex):
+            def ensure(self, force=False):
+                return {"built": False, "fingerprint": fp, "current": True, "read_only": True}
+        old = mm.NameIndex
+        mm.NameIndex = ReadOnlyIndex
+        try:
+            return Matcher(store, policy=policy, embedder=embedder, version_label=version_label)
+        finally:
+            mm.NameIndex = old
+    import duckdb
+    con = duckdb.connect()
+    con.execute(f"ATTACH '{Path(str(store.path)).as_posix()}' AS snap (READ_ONLY)")
+    for (t,) in con.execute("SELECT table_name FROM duckdb_tables() WHERE database_name='snap'").fetchall():
+        if not t.startswith('res_'):
+            con.execute(f'CREATE VIEW main."{t}" AS SELECT * FROM snap.main."{t}"')
+    con.execute("CREATE TABLE res_index_meta (fingerprint VARCHAR, built_at TIMESTAMP, build_s DOUBLE)")
+    ov = types.SimpleNamespace(con=con)
+    return Matcher(ov, policy=policy, embedder=embedder, version_label=version_label)
+
 ID_KEYS = ("id", "reference_id", "ref_id", "rid", "key")
 TEXT_KEYS = ("reference", "text", "query", "raw", "input")
 NAME_KEYS = ("name", "company", "entity_name")

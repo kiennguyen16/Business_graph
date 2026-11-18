@@ -27,7 +27,7 @@ BUNDLE_DIR = Path(os.environ.get("BIZGRAPH_BUNDLE_DIR", DEMO_DIR / "bundle"))
 BUNDLE_DB = BUNDLE_DIR / "demo.duckdb"
 BUNDLE_RDF = BUNDLE_DIR / "rdf"
 SNAPSHOT_DB = REPO / "data" / os.environ.get("BIZGRAPH_SNAPSHOT", "snap_v3_demo.duckdb")
-DEFAULT_MATCHER_VERSION = "m-94f4f6b2-d37e44c6"  # v3
+DEFAULT_MATCHER_VERSION = "m-b5e50f74-d37e44c6"  # v4
 MEMORY_LIMIT = os.environ.get("BIZGRAPH_MEMORY_LIMIT", "2GB")
 
 # Example inputs shared by the app and the precompute step.
@@ -292,17 +292,21 @@ class Backend:
             self.endpoint_desc = f"Fuseki at {self.fuseki_url}"
         else:
             rdf_dir = Path(os.environ.get("BIZGRAPH_RDF_DIR", BUNDLE_RDF))
-            self.endpoint, self.rdf_manifest = load_local_endpoint(rdf_dir)
+            self.endpoint = None
+            self._rdf_dir = rdf_dir
+            self.rdf_manifest = json.loads((rdf_dir / "manifest.json").read_text(encoding="utf-8"))
             n = sum(g.get("triples", 0) for g in self.rdf_manifest.get("graphs", []))
-            self.endpoint_desc = f"in-process rdflib LocalEndpoint over {rdf_dir.name}/ ({n:,} triples)"
+            self.endpoint_desc = f"lazy rdflib LocalEndpoint over {rdf_dir.name}/ ({n:,} triples)"
         timings["sparql_endpoint"] = time.perf_counter() - t
 
         from bizgraph.services.projection import ProjectionService
         from bizgraph.services.traversal import TraversalService
 
         t = time.perf_counter()
-        self.traversal = TraversalService(self.endpoint, self.store, matcher_version=self.matcher_version)
-        self.projection = ProjectionService(self.endpoint, self.store, matcher_version=self.matcher_version)
+        self._TraversalService = TraversalService
+        self._ProjectionService = ProjectionService
+        self._traversal = None
+        self._projection = None
         timings["services"] = time.perf_counter() - t
         # Heavy traversal results computed at bundle build time against the same graphs served by
         # Fuseki; used only when this process has no Fuseki (rdflib is far slower on them).
@@ -314,6 +318,23 @@ class Backend:
         timings["total"] = time.perf_counter() - t0
         self.startup_timings = {k: round(v, 2) for k, v in timings.items()}
         self.live_version = self.matcher.version.version
+
+    def _ensure_endpoint(self):
+        if self.endpoint is None:
+            self.endpoint, self.rdf_manifest = load_local_endpoint(self._rdf_dir)
+        return self.endpoint
+
+    @property
+    def traversal(self):
+        if self._traversal is None:
+            self._traversal = self._TraversalService(self._ensure_endpoint(), self.store, matcher_version=self.matcher_version)
+        return self._traversal
+
+    @property
+    def projection(self):
+        if self._projection is None:
+            self._projection = self._ProjectionService(self._ensure_endpoint(), self.store, matcher_version=self.matcher_version)
+        return self._projection
 
     # ------------------------------------------------------------------ helpers
 

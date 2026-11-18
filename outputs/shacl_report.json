@@ -1,0 +1,242 @@
+{
+  "engine": "jena",
+  "command": [
+    "tools/jdk-21.0.13+9/bin/java.exe",
+    "-Xmx3g",
+    "-cp",
+    "tools/apache-jena-5.5.0/lib/*",
+    "shacl.shacl",
+    "validate",
+    "--shapes",
+    "ontology/shapes.ttl",
+    "--data",
+    "data/rdf/published/shacl_work/final_union.nt"
+  ],
+  "heap": "3g",
+  "seconds": 42.09,
+  "returncode": 0,
+  "sampling": {
+    "method": "CRC32 of UTF-8 N-Triples subject token (including angle brackets) modulo 1024 = 0; retain every triple of chosen subjects. Add complete canonical and source descriptions referenced from full small graphs, then source descriptions referenced by selected canonical parties. Small graphs and ontology included in full. No orphan type-only sampling.",
+    "graphs": [
+      {
+        "graph": "urn:graph:ontology",
+        "mode": "full",
+        "base_sample_subjects": 0,
+        "subjects": 162,
+        "triples": 929
+      },
+      {
+        "graph": "urn:graph:source:accc_notice:2026-11-17",
+        "mode": "full",
+        "base_sample_subjects": 0,
+        "subjects": 41,
+        "triples": 426
+      },
+      {
+        "graph": "urn:graph:source:asic_afsl:2026-11-11",
+        "mode": "full",
+        "base_sample_subjects": 0,
+        "subjects": 13103,
+        "triples": 149492
+      },
+      {
+        "graph": "urn:graph:source:asic_banned_org:2026-11-09",
+        "mode": "full",
+        "base_sample_subjects": 0,
+        "subjects": 31,
+        "triples": 221
+      },
+      {
+        "graph": "urn:graph:source:asic_credit:2026-11-15",
+        "mode": "full",
+        "base_sample_subjects": 0,
+        "subjects": 8617,
+        "triples": 127460
+      },
+      {
+        "graph": "urn:graph:source:asic_liquidator:2026-11-09",
+        "mode": "full",
+        "base_sample_subjects": 0,
+        "subjects": 1821,
+        "triples": 14383
+      },
+      {
+        "graph": "urn:graph:source:gleif_l1:2026-11-16",
+        "mode": "full",
+        "base_sample_subjects": 0,
+        "subjects": 59717,
+        "triples": 940056
+      },
+      {
+        "graph": "urn:graph:source:gleif_l2:2026-11-16",
+        "mode": "full",
+        "base_sample_subjects": 0,
+        "subjects": 13097,
+        "triples": 84798
+      },
+      {
+        "graph": "urn:graph:links:m-94f4f6b2-d37e44c6",
+        "mode": "full",
+        "base_sample_subjects": 0,
+        "subjects": 87264,
+        "triples": 505831
+      },
+      {
+        "graph": "urn:graph:derived:licence_history",
+        "mode": "full",
+        "base_sample_subjects": 0,
+        "subjects": 1393,
+        "triples": 13126
+      },
+      {
+        "graph": "urn:graph:canonical",
+        "mode": "sample plus reference closure",
+        "base_sample_subjects": 1034,
+        "subjects": 62974,
+        "triples": 768715
+      },
+      {
+        "graph": "urn:graph:source:abr:2026-11-11",
+        "mode": "sample plus reference closure",
+        "base_sample_subjects": 1064,
+        "subjects": 58361,
+        "triples": 739913
+      },
+      {
+        "graph": "urn:graph:source:asic_company:2026-11-09",
+        "mode": "sample plus reference closure",
+        "base_sample_subjects": 236,
+        "subjects": 43421,
+        "triples": 515330
+      }
+    ],
+    "assembly_s": 24.241867799999454
+  },
+  "triples_validated": 3860680,
+  "stderr": "",
+  "conforms": true,
+  "sampled": true,
+  "results": 0,
+  "by_severity": {},
+  "by_shape": {},
+  "examples": {},
+  "violations": [],
+  "execution_succeeded": true,
+  "matcher_version": "m-94f4f6b2-d37e44c6",
+  "database": "data/snap_v3_publish.duckdb",
+  "stored_graph_counts": {
+    "urn:graph:canonical": 11789763,
+    "urn:graph:derived:licence_history": 13126,
+    "urn:graph:links:m-94f4f6b2-d37e44c6": 505831,
+    "urn:graph:ontology": 929,
+    "urn:graph:source:abr:2026-11-11": 13098624,
+    "urn:graph:source:accc_notice:2026-11-17": 426,
+    "urn:graph:source:asic_afsl:2026-11-11": 149492,
+    "urn:graph:source:asic_banned_org:2026-11-09": 221,
+    "urn:graph:source:asic_company:2026-11-09": 3123515,
+    "urn:graph:source:asic_credit:2026-11-15": 127460,
+    "urn:graph:source:asic_liquidator:2026-11-09": 14383,
+    "urn:graph:source:gleif_l1:2026-11-16": 940056,
+    "urn:graph:source:gleif_l2:2026-11-16": 84798
+  },
+  "offline_count_query": [
+    "tools/jdk-21.0.13+9/bin/java.exe",
+    "-Xmx3g",
+    "-cp",
+    "tools/apache-jena-5.5.0/lib/*",
+    "tdb2.tdbquery",
+    "--loc=data/tdb2",
+    "--query=data/rdf/published/graph_counts.rq",
+    "--results=JSON"
+  ],
+  "offline_count_seconds": 11.438834800000222,
+  "export_counts_match_store": true,
+  "tests": {
+    "passed": 104,
+    "skipped": 1,
+    "seconds": 64.65
+  },
+  "disk_sizes": {
+    "duckdb_allocated_bytes": 4828704768,
+    "duckdb_logical_bytes": 4828704768,
+    "tdb2_allocated_bytes": 14803088844,
+    "tdb2_logical_bytes": 14803088844
+  },
+  "bulk_load": {
+    "total_s": 348.34796499999993,
+    "heap": "3g",
+    "graphs": [
+      {
+        "graph": "urn:graph:ontology",
+        "load_s": 1.842623999999887,
+        "success": true
+      },
+      {
+        "graph": "urn:graph:source:abr:2026-11-11",
+        "load_s": 168.00343370000064,
+        "success": true
+      },
+      {
+        "graph": "urn:graph:source:accc_notice:2026-11-17",
+        "load_s": 2.0566110999998273,
+        "success": true
+      },
+      {
+        "graph": "urn:graph:source:asic_afsl:2026-11-11",
+        "load_s": 5.502076400000078,
+        "success": true
+      },
+      {
+        "graph": "urn:graph:source:asic_banned_org:2026-11-09",
+        "load_s": 2.246740399999908,
+        "success": true
+      },
+      {
+        "graph": "urn:graph:source:asic_company:2026-11-09",
+        "load_s": 29.268531800000346,
+        "success": true
+      },
+      {
+        "graph": "urn:graph:source:asic_credit:2026-11-15",
+        "load_s": 4.668442799999866,
+        "success": true
+      },
+      {
+        "graph": "urn:graph:source:asic_liquidator:2026-11-09",
+        "load_s": 2.921099800000775,
+        "success": true
+      },
+      {
+        "graph": "urn:graph:source:gleif_l1:2026-11-16",
+        "load_s": 12.117384999999558,
+        "success": true
+      },
+      {
+        "graph": "urn:graph:source:gleif_l2:2026-11-16",
+        "load_s": 3.90823730000011,
+        "success": true
+      },
+      {
+        "graph": "urn:graph:canonical",
+        "load_s": 102.86509170000045,
+        "success": true
+      },
+      {
+        "graph": "urn:graph:links:m-94f4f6b2-d37e44c6",
+        "load_s": 9.529098099999828,
+        "success": true
+      },
+      {
+        "graph": "urn:graph:derived:licence_history",
+        "load_s": 3.3930061000000933,
+        "success": true
+      }
+    ]
+  },
+  "export_seconds": 93.73740129999987,
+  "limitations": [
+    "Large graphs are sampled, not fully validated; global uniqueness outside the sample is not proven.",
+    "Fuseki HTTP startup was skipped; counts were obtained offline."
+  ],
+  "memory_failures": []
+}

@@ -51,6 +51,7 @@ class PartyView:
     postcode: str | None = None
     entity_type: str | None = None  # ABR entity type code (PRV, OIE, DTT, SMF, ...) or ASIC type
     foreign_registration: bool = False  # the Australian registration of a foreign body (FNOS / OIE / ARBN)
+    former_name_conflicts: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -97,6 +98,8 @@ class FeatureVector:
     trust_like: bool = False  # trust or super fund on either side (needs postcode / state agreement)
     candidate_entity_type: str | None = None
     party_type_basis: str | None = None
+    former_name_conflict: bool = False
+    person_business_name_exact: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -345,8 +348,14 @@ class FeatureExtractor:
             return fv
         _, cnorm, ckind, missing_all, extra_all, matched_all = best
         fv.compared_name, fv.compared_name_kind = cnorm, ckind
+        fv.former_name_conflict = ckind == "former_name" and cnorm in party.former_name_conflicts
         fv.name_exact = cnorm == ref_norm
         fv.name_exact_unique = fv.name_exact and (unique_norms is None or cnorm in unique_norms)
+        fv.person_business_name_exact = (
+            party.party_type == "person" and fv.name_exact_unique
+            and ckind in ("business_name", "trading_name")
+            and ref.state_basis == "text" and hint != "person" and "person_shaped_name" not in ref.notes
+        )
         fv.jaro_winkler = round(JaroWinkler.similarity(ref_norm, cnorm), 4)
         fv.token_set_ratio = round(fuzz.token_set_ratio(ref_norm, cnorm) / 100.0, 4)
         fv.ref_tokens_missing_in_candidate = missing_all
@@ -354,7 +363,8 @@ class FeatureExtractor:
         union_all = len(ref_core) + len(extra_all)
         fv.token_overlap = round(matched_all / union_all, 4) if union_all else 0.0
 
-        cn = self._normalise_norm(cnorm, person=party.party_type == "person")
+        cn = self._normalise_norm(cnorm, person=party.party_type == "person"
+                                  and ckind not in ("business_name", "trading_name"))
         cand_d = frozenset(t for t in (cn.distinctive if cn else ()) if not is_generic_typo(t))
         ref_d = frozenset(t for t in ref.distinctive if not is_generic_typo(t))
         missing, extra, matched = distinctive_alignment(ref_d, cand_d, typos=ref.source not in REGISTER_SOURCES)

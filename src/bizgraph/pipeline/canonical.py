@@ -9,11 +9,14 @@ tables (T2.5 idempotency).
 Who becomes a party
 -------------------
 * every ABR record in the store (the ABR slice: active WA + TAS, plus every ABN
-  referenced by a Tier 2 source), keyed ``urn:abn:{abn}``;
+  referenced by a Tier 2 source);
 * every ASIC company whose ACN a Tier 2 source references and that no ABR party
-  represents, keyed ``urn:acn:{acn}``;
-* the ASIC side of every identity conflict below, keyed ``urn:acn:{acn}`` and
-  flagged ``quarantined`` (the record is evidence; it is neither merged nor dropped).
+  represents;
+* the ASIC side of every identity conflict below, flagged ``quarantined``
+  and preserved as evidence.
+
+The key registry preserves the earliest key attached to a party's identifiers.
+New parties mint a key from the first available identifier in ABN, ACN, LEI order.
 
 ASIC enriches an ABR party (ACN, status, type, class, registration dates as
 validity, former names as aliases) only through a *clean* pair:
@@ -192,9 +195,9 @@ class CanonicalBuilder:
             self._stage_inputs()
             self._stage_names()
             self._stage_pairs_and_conflicts()
-            self._stage_parties()
             con.execute("BEGIN TRANSACTION")
             try:
+                self._stage_parties()
                 self._write()
                 con.execute("COMMIT")
             except Exception:
@@ -204,7 +207,7 @@ class CanonicalBuilder:
             for v in ("_t2_abn", "_t2_acn"):
                 con.unregister(v)
             for t in ("_abr", "_asic", "_names", "_abr_alias", "_asic_alias", "_pair", "_conflict",
-                      "_idclean", "_named", "_mismatch", "_clean", "_party", "_qrow"):
+                      "_idclean", "_named", "_mismatch", "_clean", "_party", "_qrow", "_party_ids", "_party_keys"):
                 con.execute(f"DROP TABLE IF EXISTS {t}")
         stats = self.stats()
         stats.wall_clock_s = time.perf_counter() - started
@@ -232,7 +235,7 @@ class CanonicalBuilder:
                        nullif(trim(payload->>'postcode'), '') AS postcode,
                        payload->'other_names' AS other_names,
                        payload->'dgr' AS dgr,
-                       last_seen_snapshot
+                       last_seen_snapshot, identifiers
                 FROM source_record WHERE source = 'abr'
                 QUALIFY row_number() OVER (PARTITION BY record_id ORDER BY {_LATEST}) = 1"""
         )
@@ -243,7 +246,7 @@ class CanonicalBuilder:
                     -- ACN-scheme records only: an ARBN body (FNOS / RACN) has acn NULL.
                     SELECT * FROM (
                         SELECT record_id AS acn, acn AS acn_col, abn, name_raw, name_norm, payload,
-                               last_seen_snapshot
+                               last_seen_snapshot, identifiers
                         FROM source_record WHERE source = 'asic_company'
                         QUALIFY row_number() OVER (PARTITION BY record_id ORDER BY {_LATEST}) = 1)
                     WHERE acn_col IS NOT NULL),
@@ -256,7 +259,7 @@ class CanonicalBuilder:
                        l.payload->'former_names' AS former_names,
                        coalesce(c.n_acn, 0) AS abn_n_acn,
                        l.acn IN (SELECT acn FROM _t2_acn) AS t2_ref,
-                       l.last_seen_snapshot
+                       l.last_seen_snapshot, l.identifiers
                 FROM latest l LEFT JOIN abn_claims c USING (abn)
                 WHERE l.acn IN (SELECT acn FROM _abr WHERE acn IS NOT NULL)
                    OR l.abn IN (SELECT abn FROM _abr)
@@ -489,13 +492,15 @@ class CanonicalBuilder:
                 FROM asic_keys k JOIN _asic s ON s.acn = k.acn LEFT JOIN inherited i ON i.acn = s.acn)
             SELECT * FROM abr_p UNION ALL BY NAME SELECT * FROM asic_p"""
         )
+        self._assign_keys()
         # Quarantine rows: one per (invariant, involved record), with the party it belongs to.
         con.execute(
             """CREATE OR REPLACE TEMP TABLE _qrow AS
                WITH r AS (
                    SELECT CASE WHEN k.abr_abn IS NOT NULL THEN 'abr' ELSE 'asic_company' END AS source,
                           coalesce(k.abr_abn, k.asic_acn) AS record_id, k.invariant, k.detail,
-                          CASE WHEN k.abr_abn IS NOT NULL THEN 'urn:abn:' || k.abr_abn
+                          CASE WHEN k.abr_abn IS NOT NULL THEN
+                                    (SELECT p.canonical_key FROM _party p WHERE p.source = 'abr' AND p.abn = k.abr_abn)
                                ELSE (SELECT p.canonical_key FROM _party p WHERE p.asic_record_id = k.asic_acn
                                      ORDER BY p.source DESC LIMIT 1) END AS canonical_key
                    FROM _conflict k)
@@ -507,6 +512,73 @@ class CanonicalBuilder:
                                        json_object('record', source || ':' || record_id))::VARCHAR AS detail,
                       min(canonical_key) AS canonical_key
                FROM r GROUP BY source, record_id, invariant, detail"""
+        )
+
+    def _assign_keys(self) -> None:
+        con = self.con
+        # Seed existing databases before replacing the canonical tables.
+        if not self._x("SELECT 1 FROM party_key_registry LIMIT 1"):
+            con.execute(
+                """INSERT INTO party_key_registry (scheme, value, canonical_key)
+                   WITH fields AS (
+                       SELECT scheme, value, canonical_key FROM (
+                           UNPIVOT party_canonical ON abn, acn, lei INTO NAME scheme VALUE value)
+                       QUALIFY count(*) OVER (PARTITION BY scheme, value) = 1),
+                   registered AS (
+                       SELECT i.scheme, i.value, i.canonical_key
+                       FROM identifier i JOIN party_canonical p USING (canonical_key)
+                       WHERE i.scheme IN ('abn', 'acn', 'arbn', 'arsn', 'lei'))
+                   SELECT * FROM registered
+                   UNION ALL SELECT * FROM fields ANTI JOIN registered USING (scheme, value)"""
+            )
+        con.execute(
+            """CREATE OR REPLACE TEMP TABLE _party_ids AS
+               SELECT source, record_id, scheme, value FROM (
+                   SELECT source, record_id, scheme, value FROM (
+                       UNPIVOT _party ON abn, acn INTO NAME scheme VALUE value)
+                   UNION
+                   SELECT p.source, p.record_id, j.value->>0, j.value->>1
+                   FROM _party p
+                   LEFT JOIN _abr a ON p.source = 'abr' AND a.abn = p.record_id
+                   LEFT JOIN _asic s ON s.acn = p.asic_record_id,
+                   LATERAL json_each(list_concat(a.identifiers::JSON[], s.identifiers::JSON[])::JSON) j
+                   WHERE j.value->>0 IN ('arbn', 'arsn', 'lei') AND j.value->>1 IS NOT NULL)
+               QUALIFY count(*) OVER (PARTITION BY scheme, value) = 1"""
+        )
+        con.execute(
+            """CREATE OR REPLACE TEMP TABLE _party_keys AS
+               WITH preferred AS (
+                   SELECT p.source, p.record_id, p.canonical_key AS source_key,
+                          coalesce(r.canonical_key, 'urn:' || i.scheme || ':' || i.value) AS preferred_key
+                   FROM _party p JOIN _party_ids i USING (source, record_id)
+                   LEFT JOIN party_key_registry r USING (scheme, value)
+                   QUALIFY row_number() OVER (PARTITION BY p.source, p.record_id
+                       ORDER BY r.minted_at NULLS LAST,
+                                CASE i.scheme WHEN 'abn' THEN 1 WHEN 'acn' THEN 2
+                                     WHEN 'lei' THEN 3 ELSE 4 END, i.scheme, i.value) = 1)
+               SELECT source, record_id, preferred_key,
+                      CASE WHEN row_number() OVER (PARTITION BY preferred_key
+                              ORDER BY source_key <> preferred_key, source_key) = 1
+                           THEN preferred_key ELSE source_key END AS canonical_key
+               FROM preferred"""
+        )
+        con.execute(
+            """UPDATE _party p SET canonical_key = k.canonical_key FROM _party_keys k
+               WHERE p.source = k.source AND p.record_id = k.record_id AND p.canonical_key <> k.canonical_key"""
+        )
+        # A newly quarantined split can expose two parties that used to share a key.
+        # Its original identifier retains the key; the separated identifiers get their own.
+        con.execute(
+            """UPDATE party_key_registry r SET canonical_key = k.canonical_key, minted_at = current_timestamp
+               FROM _party_ids i JOIN _party_keys k USING (source, record_id)
+               WHERE k.preferred_key <> k.canonical_key AND r.canonical_key = k.preferred_key
+                 AND r.scheme = i.scheme AND r.value = i.value"""
+        )
+        con.execute(
+            """INSERT INTO party_key_registry (scheme, value, canonical_key)
+               SELECT i.scheme, i.value, p.canonical_key
+               FROM _party_ids i ANTI JOIN party_key_registry USING (scheme, value)
+               JOIN _party p USING (source, record_id)"""
         )
 
     def _write(self) -> None:
@@ -521,31 +593,31 @@ class CanonicalBuilder:
                    entity_type, entity_type_text, status, state, postcode, anzsic, valid_from, valid_to,
                    source, record_id, abn_status, abn_status_from, asic_status, asic_type, asic_class,
                    asic_record_id, slice_reason, quarantined)
-               SELECT p.canonical_key, p.party_type, p.name, p.name_norm, p.abn, p.acn, NULL,
+               SELECT p.canonical_key, p.party_type, p.name, p.name_norm, p.abn, p.acn, i.value,
                       p.entity_type, p.entity_type_text, p.status, p.state, p.postcode, NULL,
                       p.valid_from, p.valid_to, p.source, p.record_id, p.abn_status, p.abn_status_from,
                       p.asic_status, p.asic_type, p.asic_class, p.asic_record_id, p.slice_reason,
                       p.canonical_key IN (SELECT canonical_key FROM _qrow WHERE canonical_key IS NOT NULL)
-               FROM _party p ORDER BY p.canonical_key"""
+               FROM _party p LEFT JOIN (
+                   SELECT source, record_id, min(value) AS value FROM _party_ids WHERE scheme = 'lei'
+                   GROUP BY source, record_id) i USING (source, record_id)
+               ORDER BY p.canonical_key"""
         )
         con.execute("DELETE FROM identifier")
-        # Only values that belong to exactly one party; ACNs in conflict stay with the
-        # party keyed by them (urn:acn:...) and nowhere else.
+        # Only values that belong to exactly one party.
         con.execute(
             """INSERT INTO identifier (canonical_key, scheme, value)
-               SELECT canonical_key, scheme, value FROM (
-                   SELECT canonical_key, 'abn' AS scheme, abn AS value FROM party_canonical WHERE abn IS NOT NULL
-                   UNION ALL
-                   SELECT canonical_key, 'acn', acn FROM party_canonical WHERE acn IS NOT NULL)
-               QUALIFY count(*) OVER (PARTITION BY scheme, value) = 1
-               ORDER BY scheme, value"""
+               SELECT p.canonical_key, i.scheme, i.value
+               FROM _party_ids i JOIN _party p USING (source, record_id)
+               ORDER BY i.scheme, i.value"""
         )
         con.execute("DELETE FROM alias")
         con.execute(
             """INSERT INTO alias (canonical_key, alias, alias_norm, alias_type, source, record_id)
                SELECT DISTINCT * FROM (
-                   SELECT 'urn:abn:' || o.abn, o.alias, n.alias_norm, o.alias_type, 'abr', o.abn
-                   FROM _abr_alias o LEFT JOIN _names n USING (alias)
+                   SELECT p.canonical_key, o.alias, n.alias_norm, o.alias_type, 'abr', o.abn
+                   FROM _abr_alias o JOIN _party p ON p.source = 'abr' AND p.abn = o.abn
+                   LEFT JOIN _names n USING (alias)
                    UNION ALL
                    SELECT p.canonical_key, f.alias, n.alias_norm, f.alias_type, 'asic_company', f.acn
                    FROM _asic_alias f JOIN _party p ON p.asic_record_id = f.acn

@@ -371,3 +371,31 @@ stale `name_norm`), the CLI (`match`, `redecide`, `resolve-file`) and rescoring 
   saving); a fuzzy rival to an identifier link is therefore not seen in batch.
 * Exact path: identifier links identical across v1, v2 and v3 (plus 41 stated-ABN links in v3 that v2
   refused on a type hint).
+
+## 7. Matcher v4
+
+`m-b5e50f74-d37e44c6` rebuilt and matched all six sources with the v3 MiniLM model and thresholds.
+
+1. Seeded the canonical key registry before rebuild. All 1,075,765 v3 party keys survived, including
+   ACN keys when an ABN was added in the regression test.
+2. Checked former names against current and former ASIC names, including companies outside the
+   graph. Genesee now abstains as `AMBIGUOUS`, and Harvest Funds resolves to its current holder.
+3. Applied the jurisdiction gate to foreign legal forms in free text. Rio Tinto plc abstains as
+   `JURISDICTION_MISMATCH`. The parser reads SA as South Australia when an address delimiter or
+   domestic legal suffix identifies it as a state.
+4. Skipped same-party ownership projections in both traversals. A chain that stops on this edge
+   reports `IDENTITY_COLLAPSE`.
+5. Expanded P/L and CORP, parsed trailing town and state fragments, and allowed unique exact
+   registered business or trading names of individuals for references without a person-shaped name.
+
+| Set | v3 precision / recall | v4 precision / recall | v4 wrong links |
+|---|---|---|---|
+| Existing labels | 99.7% / 93.2% | 100.0% (285/285) / 92.5% (285/308) | 0 |
+| Existing rehearsal | 100.0% / 68.1% | 100.0% (150/150) / 79.8% (150/188) | 0 |
+| Held-out rehearsal (seed 20261119) | | 100.0% (152/152) / 80.9% (152/188) | 0 |
+
+V4 abstained on the two previously correct labelled links for Lamboo Resources and MLC Limited
+because of former-name ambiguity. Both rehearsal sets had 12 of 12 correct absent-reference abstentions.
+
+The final focused run passed 84 tests. The full suite, including the independent resolution
+contract, passed 598 tests with 20 skipped.

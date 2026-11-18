@@ -61,7 +61,7 @@ class GeneratedCandidate:
 class NameIndex:
     """Builds and refreshes the derived resolution tables (see module docstring)."""
 
-    INDEX_VERSION = "v4"  # bump when the derived table definitions change
+    INDEX_VERSION = "v5"  # bump when the derived table definitions change
 
     def __init__(self, con: duckdb.DuckDBPyConnection) -> None:
         self.con = con
@@ -92,7 +92,7 @@ class NameIndex:
         cache: dict[tuple[str, bool], str | None] = {}
         while rows := cur.fetchmany(100_000):
             for key, raw, kind, ptype in rows:
-                person = ptype == "person"
+                person = ptype == "person" and kind not in ("business_name", "trading_name")
                 ck = (raw, person)
                 if ck not in cache:
                     n = names.normalise_person(raw) if person else names.normalise(raw)
@@ -118,7 +118,9 @@ class NameIndex:
                                                  party_type, coalesce(quarantined, false))), 0)
                        FROM party_canonical) || ':' ||
                       (SELECT count(*) FROM alias) || ':' ||
-                      (SELECT coalesce(sum(hash(canonical_key, alias_norm)), 0) FROM alias) || ':' ||
+                      (SELECT coalesce(sum(hash(canonical_key, alias, alias_type)), 0) FROM alias) || ':' ||
+                      (SELECT coalesce(sum(hash(record_id, content_hash, last_seen_snapshot, load_seq)), 0)
+                       FROM source_record WHERE source = 'asic_company') || ':' ||
                       (SELECT coalesce(sum(hash(canonical_key, scheme, value)), 0) FROM identifier)"""
         ).fetchall()
         import hashlib
@@ -171,6 +173,7 @@ class NameIndex:
                 FROM dist d JOIN party_canonical p USING (canonical_key)
                 ORDER BY block_token, d.canonical_key"""
         )
+        self._index_former_names()
         # Australian registrations of foreign bodies: ABR "Other Incorporated Entity", ASIC type
         # FNOS / RACN (also through the ASIC record of the party's ACN), or an ARBN.
         has_asic = con.execute(
@@ -219,6 +222,57 @@ class NameIndex:
         con.execute("INSERT INTO res_index_meta VALUES (?, current_timestamp, ?)", [fp, build_s])
         n = con.execute("SELECT count(*) FROM res_name_index").fetchall()[0][0]
         return {"built": True, "fingerprint": fp, "names": n, "build_s": round(build_s, 2)}
+
+    def _index_former_names(self) -> None:
+        """Count holders of compared former names, including companies outside the graph."""
+        import pyarrow as pa
+
+        from bizgraph.normalise.names import NameNormaliser
+        from bizgraph.pipeline.canonical import _LATEST
+
+        con = self.con
+        relevant = {row[0] for row in con.execute(
+            "SELECT DISTINCT name_norm FROM res_name_index WHERE kind = 'former_name'"
+        ).fetchall()}
+        names = NameNormaliser()
+        holders: set[tuple[str, str, bool]] = set()
+        if relevant:
+            cur = con.cursor()
+            try:
+                cur.execute(f"""WITH latest AS (
+                    SELECT record_id, name_raw, payload->'former_names' AS former_names
+                    FROM source_record WHERE source = 'asic_company'
+                    QUALIFY row_number() OVER (PARTITION BY record_id ORDER BY {_LATEST}) = 1)
+                    SELECT coalesce(p.canonical_key, 'asic_company:' || s.record_id),
+                           s.name_raw, s.former_names::VARCHAR[]
+                    FROM latest s LEFT JOIN party_canonical p ON p.asic_record_id = s.record_id""")
+                while rows := cur.fetchmany(50_000):
+                    for holder, raw, former in rows:
+                        for name in [raw, *(former or ())]:
+                            norm = names.normalise(name)
+                            if norm and norm.norm in relevant:
+                                holders.add((norm.norm, holder, name == raw))
+            finally:
+                cur.close()
+        con.register("_asic_name_holders", pa.table({
+            "name_norm": pa.array([h[0] for h in holders], pa.string()),
+            "holder": pa.array([h[1] for h in holders], pa.string()),
+            "is_current": pa.array([h[2] for h in holders], pa.bool_()),
+        }))
+        try:
+            con.execute("""CREATE OR REPLACE TABLE res_former_name AS
+                WITH relevant AS (
+                    SELECT DISTINCT name_norm FROM res_name_index WHERE kind = 'former_name'),
+                holders AS (
+                    SELECT i.name_norm, i.canonical_key AS holder, i.kind <> 'former_name' AS is_current
+                    FROM res_name_index i JOIN relevant USING (name_norm)
+                    WHERE i.kind IN ('name', 'register_name', 'former_name')
+                    UNION ALL SELECT * FROM _asic_name_holders)
+                SELECT name_norm, list(DISTINCT holder) FILTER (WHERE is_current) AS current_holders,
+                       count(DISTINCT holder) FILTER (WHERE NOT is_current) AS n_former
+                FROM holders GROUP BY name_norm""")
+        finally:
+            con.unregister("_asic_name_holders")
 
 
 # --------------------------------------------------------------------------- generators

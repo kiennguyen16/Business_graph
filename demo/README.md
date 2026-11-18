@@ -20,9 +20,8 @@ start-up timings.
   `m-94f4f6b2-d37e44c6` (the default; `BIZGRAPH_MATCHER_VERSION` picks another), live `resolve`
   under v3's stored threshold policy, SPARQL over graphs exported by `RdfExporter`, `licence_event`
   from the store.
-* Off by default: the semantic (embedding) path. The hosted app does not load the 0.7 GB model, so
-  live `resolve` uses the exact and fuzzy paths. `BIZGRAPH_EMBEDDER=auto` turns it on where
-  sentence-transformers is installed. Stored decisions are shown as v3 made them.
+* The semantic (embedding) path is ON in the hosted Docker demo. The image bakes the CPU
+  `all-MiniLM-L6-v2` model and sets `BIZGRAPH_EMBEDDER=auto`; stored decisions are shown as v3 made them.
 * Live code version: `resolve` runs the code in `src/`. If the stored resolution index predates that
   code, the app rebuilds the index in memory over read-only views of the file (the file is never
   written) and says so in the sidebar.
@@ -144,6 +143,9 @@ so the image serves the bundle through an embedded Fuseki and every page is live
 4. Expect about 40 s to start and a peak of about 2.0 GB of memory (rdflib holds the graphs); check the
    tier's current memory limit. Example traversals come from the precomputed results; other graph
    views are slow (mode B).
+
+See [STREAMLIT_CLOUD.md](STREAMLIT_CLOUD.md) for exact Streamlit Cloud setup. Docker Spaces are paid; use Streamlit Cloud or docker compose. See [HUGGINGFACE.md](HUGGINGFACE.md) for the Docker setup, bundle options, environment
+variables, timings, and troubleshooting. The hosted Docker demo has the semantic path ON.
 
 ## Docker (fallback to hosting)
 

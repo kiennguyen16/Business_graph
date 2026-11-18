@@ -8,3 +8,4 @@ tests/
 **/__pycache__/
 *.duckdb.wal
 demo/bundle/*.building*
+.cache/

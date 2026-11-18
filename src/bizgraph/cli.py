@@ -87,8 +87,9 @@ def cmd_build_canonical(args: argparse.Namespace) -> int:
     import json
 
     from bizgraph.pipeline.canonical import CanonicalBuilder
+    from bizgraph.resolution.cli_commands import _open
 
-    with _store(args) as store:
+    with _open(args) as store:
         stats = CanonicalBuilder(store).build()
     print(json.dumps(stats.as_dict(), indent=2, default=str))
     return 0
@@ -480,6 +481,23 @@ def build_parser() -> argparse.ArgumentParser:
     from bizgraph.resolve_io import configure_parser
 
     configure_parser(sub.choices["resolve-file"])
+    # Read-only safety for every resolution command (rebuilds a stale index in memory instead of
+    # writing to a read-only DB). Patched here, not in the package, to keep the matcher code hash.
+    import bizgraph.resolution.cli_commands as _rc
+    from bizgraph.resolve_io import matcher_read_only
+
+    _orig_matcher = _rc._matcher
+
+    def _matcher_with_fallback(store, args, policy_name="default"):
+        try:
+            return _orig_matcher(store, args, policy_name)
+        except Exception as exc:  # stale index on a read-only DB cannot be rebuilt in place
+            if "read-only" not in str(exc).lower() and "read_only" not in str(exc).lower():
+                raise
+            return matcher_read_only(store, _rc._policy(policy_name), embedder="auto",
+                                     version_label=getattr(args, "version_label", None) or "m")
+
+    _rc._matcher = _matcher_with_fallback
     from bizgraph.evaluation.cli_commands import add_evaluation_commands
 
     add_evaluation_commands(sub)

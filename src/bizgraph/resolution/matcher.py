@@ -195,8 +195,9 @@ class Matcher:
     def prepare(self, ref: Reference) -> Reference:
         """Rule R4 input: an UNKNOWN reference shaped like an individual's name is a PERSON
         for the name paths ('John Smith' never links to JOHN SMITH PTY LTD on name alone)."""
-        if ref.party_type_hint is PartyType.UNKNOWN and person_shaped(ref, self.given_names, self.surnames):
-            return dataclasses.replace(ref, party_type_hint=PartyType.PERSON,
+        if person_shaped(ref, self.given_names, self.surnames):
+            hint = PartyType.PERSON if ref.party_type_hint is PartyType.UNKNOWN else ref.party_type_hint
+            return dataclasses.replace(ref, party_type_hint=hint,
                                        notes=(*ref.notes, "person_shaped_name"))
         return ref
 
@@ -220,8 +221,15 @@ class Matcher:
                    JOIN _res_keys k USING (canonical_key)"""
             ).fetchall()
             names = con.execute(
-                """SELECT n.canonical_key, n.name_norm, n.kind, n.name_raw FROM res_name_index n
-                   JOIN _res_keys k USING (canonical_key) ORDER BY n.kind <> 'name', n.name_norm"""
+                """SELECT n.canonical_key, n.name_norm, n.kind, n.name_raw,
+                          CASE WHEN f.current_holders IS NOT NULL
+                               THEN NOT list_contains(f.current_holders, n.canonical_key)
+                               ELSE coalesce(f.n_former > 1, false) END
+                   FROM res_name_index n JOIN _res_keys k USING (canonical_key)
+                   LEFT JOIN res_former_name f ON n.kind = 'former_name' AND n.name_norm = f.name_norm
+                   ORDER BY CASE n.kind WHEN 'name' THEN 0 WHEN 'register_name' THEN 1
+                                        WHEN 'former_name' THEN 2 WHEN 'business_name' THEN 3
+                                        WHEN 'trading_name' THEN 3 ELSE 4 END, n.name_norm"""
             ).fetchall()
             quarantined = {
                 r[0]
@@ -236,9 +244,12 @@ class Matcher:
             id_map[key][scheme].add(value)
         name_map: dict[str, list[tuple[str, str]]] = defaultdict(list)
         raw_map: dict[str, dict[str, str]] = defaultdict(dict)
-        for key, norm, kind, raw in names:
+        former_conflicts: dict[str, set[str]] = defaultdict(set)
+        for key, norm, kind, raw, conflict in names:
             name_map[key].append((norm, kind))
             raw_map[key].setdefault(norm, raw)
+            if conflict:
+                former_conflicts[key].add(norm)
         out = {}
         for key, ptype, name, norm, state, q, postcode, etype, foreign in parties:
             out[key] = PartyView(
@@ -254,6 +265,7 @@ class Matcher:
                 postcode=postcode,
                 entity_type=etype,
                 foreign_registration=bool(foreign),
+                former_name_conflicts=frozenset(former_conflicts[key]),
             )
         return out
 
@@ -330,6 +342,8 @@ class Matcher:
 
     def candidates(self, ref: Reference) -> list[StoredCandidate]:
         alt = ref.alternative(self.names)
+        if alt is not None:
+            alt = self.prepare(alt)
         names = [ref] + ([alt] if alt else [])
         gen = self.exact.generate_ids(ref, self.con)
         for r in names:
@@ -508,7 +522,8 @@ class Matcher:
                 timings["load_parties"] += time.perf_counter() - t0
                 t0 = time.perf_counter()
                 scored = [(ref, self._score(ref, gen.get(ref.record_id, []), parties, uniq,
-                                            ref.alternative(self.names))) for ref in chunk]
+                                            self.prepare(alt) if (alt := ref.alternative(self.names))
+                                            else None)) for ref in chunk]
                 timings["features"] += time.perf_counter() - t0
                 t0 = time.perf_counter()
                 self._embed([(ref, c) for ref, cs in scored for c in cs])

@@ -427,13 +427,14 @@ def arbitrate(
 
     ranked: list[RankedCandidate] = []
     blocked: list[tuple[RankedCandidate, AbstainReason]] = []  # vetoed, but would have passed on name
+    reused_former_names: list[RankedCandidate] = []
     for c in candidates:
         fv = c.features
         veto = None
         would_pass = False
         if fv.identifier_conflict:
             veto = f"identifier conflict on {','.join(fv.identifier_conflict_schemes)}"
-        elif not fv.type_compatible:
+        elif not fv.type_compatible and (fv.identifier_match or not fv.person_business_name_exact):
             veto = f"party type conflict (reference {hint}, candidate {fv.candidate_party_type})"
         elif fv.jurisdiction_conflict and not fv.identifier_match:
             veto = (f"jurisdiction mismatch: {fv.ref_jurisdiction} entity vs an Australian-incorporated party "
@@ -447,15 +448,25 @@ def arbitrate(
             would_pass = eligible and score >= threshold
             if veto:
                 eligible, why = False, veto
+            elif fv.former_name_conflict:
+                eligible, why = False, "former name has another current holder or multiple former holders"
             elif not policy.person_name_links and hint == "person":
                 eligible, why = False, "person references are not linked on a name alone"
+            elif ref_info.get("state_basis") == "text" and fv.candidate_party_type == "person" and (
+                not fv.person_business_name_exact or label is not MatchType.NAME_NORMALISED_EXACT
+            ):
+                eligible, why = False, "person candidate requires a unique exact business or trading name"
         rc = RankedCandidate(c.canonical_key, str(label), path, round(score, 4), eligible, why,
                              sorted(c.paths), c.query_text, fv.as_dict(), c.scores, would_pass)
         ranked.append(rc)
-        if veto and not fv.identifier_match and would_pass:
+        if fv.former_name_conflict and not fv.identifier_match and (would_pass or fv.name_exact):
+            reused_former_names.append(rc)
+        if veto and not fv.identifier_match and (would_pass or (
+            fv.jurisdiction_conflict and fv.name_exact and not fv.identifier_conflict and fv.type_compatible
+        )):
             if fv.identifier_conflict:
                 kind = AbstainReason.IDENTIFIER_CONFLICT
-            elif not fv.type_compatible:
+            elif not fv.type_compatible and not fv.person_business_name_exact:
                 kind = AbstainReason.PARTY_TYPE_CONFLICT
             else:
                 kind = AbstainReason.JURISDICTION_MISMATCH
@@ -529,6 +540,10 @@ def arbitrate(
         b, kind = blocked[0]
         return abstain(kind, ranked, f"{b.canonical_key} ({b.match_type} {b.score}) blocked: {b.veto}", b)
     eligible = [r for r in ranked if r.eligible]
+    if reused_former_names and not any(r.features["name_exact"] and r.score >= threshold
+                                       for r in eligible):
+        best = max(reused_former_names, key=lambda r: r.score)
+        return abstain(AbstainReason.AMBIGUOUS, ranked, best.veto or "reused former name", best)
     # R4 / R5
     if not eligible:
         best = ranked[0]

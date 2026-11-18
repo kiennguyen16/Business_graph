@@ -573,6 +573,58 @@ def census() -> Matcher:
     return Matcher(_census_store())
 
 
+def test_reused_former_name_prefers_current_holder_and_checks_full_asic_register():
+    with _census_store() as store:
+        store.execute("INSERT INTO alias VALUES ('haven', 'TORO', 'TORO', 'trading_name', 'abr', 'haven')")
+        assert link_key(Matcher(store).resolve("Toro Pty Ltd")) == "haven"
+        store.records.upsert([SourceRecord(
+            "asic_company", "123", date(2026, 11, 16),
+            {"former_names": ["Toro Proprietary Limited"]}, "Other Holdings Pty Ltd",
+        )])
+        assert Matcher(store).resolve("Toro Pty Ltd").reason is AbstainReason.AMBIGUOUS
+        store.execute("""INSERT INTO party_canonical (canonical_key, party_type, name, name_norm)
+                         VALUES ('toro', 'organisation', 'TORO PTY LTD', 'TORO')""")
+        assert link_key(Matcher(store).resolve("Toro Pty Ltd")) == "toro"
+
+
+def test_text_foreign_forms_trigger_jurisdiction_gate(census):
+    decision = census.resolve("Rio Tinto plc")
+    assert decision.reason is AbstainReason.JURISDICTION_MISMATCH
+    assert ReferenceParser().parse("Rio Tinto GmbH Holdings").jurisdiction == "non-AU"
+    assert ReferenceParser().parse("Rio Tinto SA").jurisdiction == "non-AU"
+    assert ReferenceParser().parse("Rio Tinto AS").jurisdiction == "non-AU"
+    domestic = ReferenceParser().parse("Brown Mining Pty. Ltd. . SA")
+    assert domestic.jurisdiction is None and domestic.state == "SA"
+    assert ReferenceParser().parse("Redgum Wines Pty Ltd t/as Redgum Cellars").jurisdiction is None
+
+
+@pytest.mark.parametrize("text", [
+    "Harbour Corp P/L, Mount Barker WA 6324",
+    "Harbour Corp P / L Mount Barker, WA",
+])
+def test_text_legal_form_corp_and_town_address(text):
+    parsed = ReferenceParser().parse(text)
+    assert parsed.name_norm == NAMES.normalise("Harbour Corporation Pty Ltd").norm
+    assert parsed.normalised.legal_form == "PTY LTD"
+    assert parsed.state == "WA"
+
+
+def test_person_links_only_through_unique_exact_registered_business_names():
+    with _census_store() as store:
+        for alias in ("Whinam Environmental Services", "John Smith"):
+            store.execute("INSERT INTO alias VALUES ('solo', ?, ?, 'business_name', 'abr', 'solo')",
+                          [alias, NAMES.normalise(alias).norm])
+        matcher = Matcher(store)
+        hit = matcher.resolve("Whinam Environmental Services")
+        assert link_key(hit) == "solo" and hit.match_type is MatchType.NAME_NORMALISED_EXACT
+        assert isinstance(matcher.resolve("John Smith"), Abstention)
+        assert isinstance(matcher.resolve("Whinam Environmental Service"), Abstention)
+        store.execute("""INSERT INTO alias VALUES ('pzm', 'Whinam Environmental Services',
+                         'WHINAM ENVIRONMENTAL SERVICES', 'business_name', 'abr', 'pzm')""")
+        decision = Matcher(store).resolve("Whinam Environmental Services")
+        assert not next(c for c in decision.ranked if c.canonical_key == "solo").eligible
+
+
 @pytest.mark.parametrize("name,jur", [
     ("THE JUNO TRUST", "NZ"),  # NZ trust vs WA trust of the same name
     ("RIO TINTO PLC", "GB"),  # UK plc vs the Australian company of the dual-listed group

@@ -23,9 +23,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--url", required=True)
+    ap.add_argument("--url", default=None)
     a = ap.parse_args()
-    os.environ["FUSEKI_URL"] = a.url
+    if a.url:
+        os.environ["FUSEKI_URL"] = a.url
+    else:
+        os.environ.pop("FUSEKI_URL", None)
     from common import (BUNDLE_DB, CHAIN_EXAMPLES, ENTITY_EXAMPLES, HOPS_EXAMPLES, PRECOMPUTED,  # noqa: E402
                         Backend)
     os.environ["BIZGRAPH_DB"] = str(BUNDLE_DB)

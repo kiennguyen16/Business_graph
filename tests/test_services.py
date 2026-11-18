@@ -169,6 +169,17 @@ def build_graph() -> LocalEndpoint:
     nt.add(LINKS, i(fx), b("owned"), i("urn:abn:11111111111"))
     nt.add(LINKS, i(fx), b("owner"), i("urn:abn:22222222222"))
 
+    # A projected ownership fact whose two records resolve to the same party.
+    hudson = "urn:abn:77777777770"
+    party(hudson, "HUDSON HOLDINGS")
+    l1("HUDSON", "HUDSON HOLDINGS")
+    l1("HUDSON2", "HUDSON HOLDINGS BRANCH")
+    link("gleif_l1", rec("HUDSON"), hudson)
+    link("gleif_l1", rec("HUDSON2"), hudson)
+    hf = own("HUDSON", "HUDSON2")
+    nt.add(LINKS, i(hf), b("owned"), i(hudson))
+    nt.add(LINKS, i(hf), b("owner"), i(hudson))
+
     # --- five licences on party X: three active, two historical
     for k, (vfrom, vto) in enumerate([("2020-01-01", None), ("2024-01-01", None), ("2022-01-01", None),
                                       ("2001-01-01", "2010-01-01"), ("2011-01-01", "2015-01-01")], start=1):
@@ -301,6 +312,13 @@ def test_cycle_terminates_and_reports_path(svc: TraversalService) -> None:
     assert ch.cycle_detected and ch.ultimate_parent is None
     assert ch.cycle_path == [rec("A"), rec("B"), rec("C"), rec("A")]
     assert ch.depth == 3
+
+
+def test_same_party_ownership_is_an_identity_collapse(svc: TraversalService) -> None:
+    key = "urn:abn:77777777770"
+    for chain in (svc.ultimate_parent(key, as_of=AS_OF), svc.ownership_index(as_of=AS_OF).walk(key)):
+        assert chain.status == "IDENTITY_COLLAPSE"
+        assert chain.depth == 0 and not chain.cycle_detected
 
 
 def test_depth_cap_truncates(svc: TraversalService) -> None:

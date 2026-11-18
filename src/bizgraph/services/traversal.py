@@ -105,6 +105,7 @@ class OwnershipEdge:
     source_records: list[str] = field(default_factory=list)
     level: str = "record"  # record (aboutRecord/counterpartyRecord) | party (links-graph roles)
     rule: str | None = None  # single | majority | plurality (set when chosen by the walk)
+    identity_collapse: bool = False
 
 
 @dataclass
@@ -113,7 +114,7 @@ class OwnershipChain:
     as_of: date
     nodes: list[NodeRef] = field(default_factory=list)
     edges: list[OwnershipEdge] = field(default_factory=list)
-    status: str = "NO_PARENT"  # NO_PARENT | TOP_REACHED | CYCLE | TRUNCATED | AMBIGUOUS | NOT_FOUND
+    status: str = "NO_PARENT"  # also TOP_REACHED, IDENTITY_COLLAPSE, CYCLE, TRUNCATED, AMBIGUOUS, NOT_FOUND
     ultimate_parent: NodeRef | None = None
     cycle_detected: bool = False
     cycle_path: list[str] = field(default_factory=list)
@@ -294,12 +295,17 @@ def walk_chain(start: NodeRef, parents_of: Callable[[NodeRef], list[tuple[Owners
         found = parents_of(cur)
         by_parent: dict[str, tuple[OwnershipEdge, NodeRef]] = {}
         for edge, node in found:  # the same parent through several facts counts once
+            if edge.identity_collapse:
+                continue
             prev = by_parent.get(node.key)
             if prev is None or (edge.percentage or -1) > (prev[0].percentage or -1):
                 by_parent[node.key] = (edge, node)
         if not by_parent:
-            chain.status = "NO_PARENT" if chain.depth == 0 else "TOP_REACHED"
-            chain.ultimate_parent = cur if chain.depth else None
+            if found:
+                chain.status = "IDENTITY_COLLAPSE"
+            else:
+                chain.status = "TOP_REACHED" if chain.depth else "NO_PARENT"
+                chain.ultimate_parent = cur if chain.depth else None
             break
         cands = sorted(by_parent.values(), key=lambda en: en[1].key)
         chosen, rule = choose_parent([e for e, _ in cands])
@@ -535,7 +541,7 @@ class TraversalService:
 
     def _edges_from_rows(self, node: NodeRef, rows: list[dict[str, Any]], other_nodes: dict[str, NodeRef],
                          level: str, direction: str, kinds: Sequence[str],
-                         current_only: bool) -> list[tuple[OwnershipEdge, NodeRef]]:
+                         current_only: bool, include_collapses: bool) -> list[tuple[OwnershipEdge, NodeRef]]:
         by_fact: dict[str, OwnershipEdge] = {}
         targets: dict[str, NodeRef] = {}
         for r in rows:
@@ -548,15 +554,15 @@ class TraversalService:
             tgt = other_nodes.get(other)
             if tgt is None:
                 continue
-            if tgt.key == node.key and r.get("rec") not in (None, other):
-                # two records of one party owning each other: an identity collapse, not a
-                # cycle in the data (a record that owns itself is kept and reported as a cycle)
+            collapse = tgt.key == node.key and (level == "party" or r.get("rec") != other)
+            if collapse and not include_collapses:
                 continue
             e = by_fact.get(r["f"])
             if e is None:
                 child, parent = (node.key, tgt.key) if direction == "up" else (tgt.key, node.key)
                 e = OwnershipEdge(r["f"], local(r.get("kind")), child, parent, _num(r.get("pct")),
-                                  _d(r.get("from")), _d(r.get("to")), r.get("status"), r.get("g"), [], level)
+                                  _d(r.get("from")), _d(r.get("to")), r.get("status"), r.get("g"), [], level,
+                                  identity_collapse=collapse)
                 by_fact[r["f"]] = e
                 targets[r["f"]] = tgt
             if r.get("src") and r["src"] not in e.source_records:
@@ -564,20 +570,21 @@ class TraversalService:
         return [(by_fact[f], targets[f]) for f in sorted(by_fact)]
 
     def direct_relatives(self, node: NodeRef, as_of: date, kinds: Sequence[str] = DEFAULT_PARENT_KINDS,
-                         current_only: bool = True, direction: str = "up") -> list[tuple[OwnershipEdge, NodeRef]]:
+                         current_only: bool = True, direction: str = "up", *,
+                         include_collapses: bool = False) -> list[tuple[OwnershipEdge, NodeRef]]:
         recs = self._records_of(node)
         rows: list[dict[str, Any]] = []
         for chunk in _chunks(recs):
             rows += self.q(self.ownership_hop_query(chunk, as_of, kinds, current_only, direction))
         others = self.nodes_for_records({r["other"] for r in rows})
-        out = self._edges_from_rows(node, rows, others, "record", direction, kinds, current_only)
+        out = self._edges_from_rows(node, rows, others, "record", direction, kinds, current_only, include_collapses)
         if node.kind == "party" and self.links_graph:
             prow = self.q(self._party_ownership_query(node.key, as_of, direction))
             seen = {e.fact for e, _ in out}
             prow = [r for r in prow if r["f"] not in seen]
             pnodes = {r["otherParty"]: self._party(r["otherParty"]) or NodeRef(r["otherParty"], "party")
                       for r in prow}
-            out += self._edges_from_rows(node, prow, pnodes, "party", direction, kinds, current_only)
+            out += self._edges_from_rows(node, prow, pnodes, "party", direction, kinds, current_only, include_collapses)
         return out
 
     # ------------------------------------------------------------------ ultimate parent
@@ -594,7 +601,8 @@ class TraversalService:
                                    max_depth=max_depth, links_graph=self.links_graph)
             chain.elapsed_ms = (time.perf_counter() - t0) * 1000
             return chain
-        chain = walk_chain(start, lambda n: self.direct_relatives(n, as_of, kinds, current_only, "up"),
+        chain = walk_chain(start, lambda n: self.direct_relatives(n, as_of, kinds, current_only, "up",
+                                                                  include_collapses=True),
                            max_depth, as_of)
         chain.links_graph = self.links_graph
         if cross_check:
@@ -1196,15 +1204,17 @@ class OwnershipIndex:
         seen: set[tuple[str, str]] = set()
         for r in rows:
             c, p = rec_nodes[r["child"]], rec_nodes[r["parent"]]
+            collapse = c.key == p.key and r["child"] != r["parent"]
             if r["kind"] == ULTIMATE:
-                idx.ultimate[c.key].add(p.key)
+                if not collapse:
+                    idx.ultimate[c.key].add(p.key)
                 continue
             if (c.key, r["f"]) in seen:
                 continue
             seen.add((c.key, r["f"]))
             e = OwnershipEdge(r["f"], local(r["kind"]), c.key, p.key, _num(r.get("pct")), _d(r.get("from")),
                               _d(r.get("to")), r.get("status"), r.get("g"),
-                              [r["src"]] if r.get("src") else [], "record")
+                              [r["src"]] if r.get("src") else [], "record", identity_collapse=collapse)
             idx.parents[c.key].append((e, idx.nodes[p.key]))
         if svc.links_graph:  # party-level ownership not backed by GLEIF records (e.g. shareholdings)
             for r in svc.q(f"""SELECT ?f ?c ?p ?kind ?pct ?from ?to WHERE {{
@@ -1220,7 +1230,8 @@ class OwnershipIndex:
                     idx.nodes.setdefault(k, NodeRef(k, "party"))
                 idx.parents[r["c"]].append((OwnershipEdge(r["f"], local(r.get("kind")), r["c"], r["p"],
                                                           _num(r.get("pct")), _d(r.get("from")), _d(r.get("to")),
-                                                          None, svc.links_graph, [], "party"), idx.nodes[r["p"]]))
+                                                          None, svc.links_graph, [], "party",
+                                                          identity_collapse=r["c"] == r["p"]), idx.nodes[r["p"]]))
         idx.as_of, idx.current_only = as_of, current_only
         idx.queries = svc.n_queries - q0
         idx.load_ms = (time.perf_counter() - t0) * 1000

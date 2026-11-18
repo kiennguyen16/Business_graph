@@ -26,6 +26,8 @@ services:
         condition: service_healthy
     environment:
       FUSEKI_URL: http://fuseki:3030
+      BIZGRAPH_EMBEDDER: auto
+      BIZGRAPH_EMBEDDINGS: "1"
       # BIZGRAPH_MATCHER_VERSION: m-1465a4ba-e5444596
     ports:
       - "7860:7860"

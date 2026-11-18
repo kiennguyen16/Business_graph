@@ -269,6 +269,33 @@ def test_rebuild_is_idempotent(store):
     assert any(r["invariant"] == "SHACL_OTHER" for r in store.quarantine.list())
 
 
+def test_rebuild_keeps_legacy_acn_key_after_abn_arrives(store):
+    build(store)
+    store.con.execute("DELETE FROM party_key_registry")  # pre-registry canonical build
+    abn = make_abn(ACN_T2)
+    key = f"urn:acn:{ACN_T2}"
+    store.records.upsert([
+        abr(abn, "Offshore Custody Pty Ltd", ACN_T2, other_names=[("BN", "Offshore Custody")]),
+    ])
+    for _ in range(2):
+        build(store)
+        assert store.parties.by_identifier("abn", abn)["canonical_key"] == key
+        assert store.parties.by_identifier("acn", ACN_T2)["canonical_key"] == key
+        assert store.query("SELECT canonical_key FROM alias WHERE alias = 'Offshore Custody'") == [
+            {"canonical_key": key},
+        ]
+
+
+def test_rebuild_preserves_original_key_when_quarantine_splits_a_party(store):
+    build(store)
+    bad = asic(ACN_OK, "UNRELATED WIND FARM PTY LTD", ABN_OK)
+    store.records.upsert([bad])
+    for _ in range(2):
+        build(store)
+        assert store.parties.by_identifier("abn", ABN_OK)["canonical_key"] == f"urn:abn:{ABN_OK}"
+        assert store.parties.by_identifier("acn", ACN_OK)["canonical_key"] == f"urn:acn:{ACN_OK}"
+
+
 def test_counts(store):
     stats = build(store)
     # 10 ABR parties + ASIC: tier2-only (1) + conflict sides (multi, dis, name, c4a, c4b)
