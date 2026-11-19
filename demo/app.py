@@ -129,28 +129,8 @@ def entity_url(key: str | None) -> str | None:
 
 def header(b: Backend) -> None:
     st.title("AU/NZ Business Graph")
-    mode = "trimmed demo bundle" if b.is_bundle else "full eval snapshot"
-    sem = "on (local MiniLM)" if b.matcher.embedder else "off"
-    st.markdown(
-        f"Entity resolution over ABR, ASIC, GLEIF and ACCC registers. Matcher `{b.matcher_version}` · "
-        f"semantic path {sem} · precision first: it abstains rather than guess."
-    )
-    with st.expander("What is real and what is reduced in this demo"):
-        st.markdown(
-        f"**Real:** {mode} `{b.db_path.name}` (read-only DuckDB), matcher decisions of `{b.matcher_version}`, "
-        f"graph queries over {b.endpoint_desc}, live `resolve` with the stored threshold policy. "
-        f"**Stubbed or reduced:** semantic (embedding) path "
-        f"{'ON' if b.matcher.embedder else 'OFF (no model in this process; name paths are exact + fuzzy)'}; "
-        + ("bundle holds a subset of parties (Tier 2/3 linked, GLEIF ownership slice, licence-event holders, "
-           "example-query candidates, a random sample), so blocking finds fewer candidates than the full store "
-           "for names outside it; " if b.is_bundle else "")
-        + ("no Fuseki on this host: graph traversals for the example inputs are precomputed at bundle build "
-           "time against the same graphs, others run slowly on rdflib; " if not b.fuseki_url else "")
-        + "ACCC notices are the 20-row register extract; licence end dates are bounds from register snapshot diffs, "
-          "not true dates; no person-level director data."
-        )
-        if b.live_version != b.matcher_version:
-            st.caption(f"Live resolve runs code version `{b.live_version}`; stored links and abstentions are from "
+    if b.live_version != b.matcher_version:
+        st.caption(f"Live resolve runs code version `{b.live_version}`; stored links and abstentions are from "
                    f"`{b.matcher_version}` (set BIZGRAPH_MATCHER_VERSION to pick another stored version).")
 
 
