@@ -2,7 +2,15 @@
 
 AU/NZ business entity graph. DuckDB is the system of record and Jena TDB2 is a rebuildable RDF view. Final matcher: `m-b5e50f74-d37e44c6`.
 
-Demo: https://kien-nguyen-graph.streamlit.app/ (Streamlit Community Cloud free tier sleeps; first load about 60 seconds). The two-minute narrated walkthrough is attached to the submission email and linked from the release, not in git.
+Demo: https://kien-nguyen-graph.streamlit.app/ (Streamlit Community Cloud free tier sleeps; first load about 60 seconds). 
+
+## Demo Video
+
+
+
+https://github.com/user-attachments/assets/9a2d056b-9240-425e-9bc4-a2508310d6d4
+
+
 
 ## Run it
 
