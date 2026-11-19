@@ -291,8 +291,51 @@ Of 308 labelled records whose true party is in the graph, the true party was amo
   blind spots with an AI-written matcher (both may over-trust name equality); the rules above were chosen
   to push against that. Trust identity is the weakest evidence: the ABR does not publish trustees, so many
   trust labels rest on name + postcode. NZ legal facts (whether an NZ entry is an overseas registration of
-  an Australian company) could not be checked against the NZ Companies Office. A human should spot-check
-  the rows listed in section 6 before these numbers are quoted externally.
+  an Australian company) could not be checked against the NZ Companies Office. A human spot-check of 50
+  rows follows in N1a.
+
+### N1a. Human hand-check of 50 rows
+
+* **Who and how.** Kien Nguyen checked 50 rows by hand on 2026-11-19 against the public registers: ABN
+  Lookup (current and historical details, all-ABNs search), ASIC Connect (company summary, former names),
+  ASIC Professional Registers (AFS, credit and liquidator records) and the GLEIF LEI search (registration
+  authority and number, jurisdiction, legal form, addresses, "replaced by" links). The verdict was recorded
+  before the AI label evidence column was read.
+* **Rows.** Seeded (`seed=20261119`) from the labelled set of `m-b5e50f74-d37e44c6`: all 19 ACCC and
+  banned-organisation links (a wrong link there would falsely accuse a company), the 8 non-blind census
+  rows that link a party, 11 random links and 12 random abstentions (UNSURE excluded). 37 links and 13
+  abstentions.
+* **Question asked of each row.** Was the matcher's decision right: for a link, is the candidate the same
+  legal entity; for an abstention, should it have linked to the candidate?
+* **Files.** `labels/hand_check_m-b5e50f74-d37e44c6.xlsx` (the working sheet) and `.csv` (same rows, with
+  the lookup URLs).
+
+| source | decision | rows | matcher right | matcher wrong |
+|---|---|---:|---:|---:|
+| accc_notice | link EXACT_ACN | 7 | 7 | 0 |
+| asic_banned_org | link EXACT_ACN | 12 | 12 | 0 |
+| asic_afsl | link EXACT_ABN | 2 | 2 | 0 |
+| asic_credit | link EXACT_ABN / EXACT_ACN | 3 | 3 | 0 |
+| gleif_l1 | link EXACT_ABN | 2 | 2 | 0 |
+| gleif_l1 | link NAME_NORMALISED_EXACT | 11 | 11 | 0 |
+| asic_afsl | abstain | 2 | 2 | 0 |
+| asic_liquidator | abstain | 1 | 1 | 0 |
+| gleif_l1 | abstain | 10 | 8 | 2 |
+| **total** | | **50** | **48** | **2** |
+
+* **Precision.** 37 of 37 checked links were the same legal entity (95% Wilson interval 90.6 to 100). Every
+  identifier link (24) was confirmed by the stated ACN or ABN on the register. The 11 GLEIF name links were
+  confirmed by an ASIC registration number on the LEI, a foreign-company registration (ARBN, "Other
+  Incorporated Entity") of the same legal person, or, for two trusts, name plus postcode with no other trust
+  of that name at that postcode.
+* **Misses.** Two abstentions should have linked, both renamed companies whose LEI still carries the old
+  name: GE ENERGY OPTIMIZATION AND CONTROL PTY LTD (now Baker Hughes Digital Solutions Australia, ACN
+  082286913; GLEIF also codes it NZ, so the jurisdiction gate blocked it) and LAMBOO Resources Limited (now
+  NH3 Clean Energy, ACN 099098192; abstained AMBIGUOUS). Both are recall costs, not false links, and both
+  are already counted among the misses in section 3.
+* **Agreement with the AI labels.** The human verdict agreed with the AI label on all 50 rows. This is a
+  check of the labels, not an independent re-estimate: the rows are not a random sample of the population,
+  and 8 of them come from the non-blind census.
 
 ### N2. Sample design, and the census that was not blind
 
