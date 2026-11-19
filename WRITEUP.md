@@ -9,7 +9,7 @@
 ## 2. The threshold
 - Name path 0.90; **0.97 plus a wider margin and compatible legal forms for banned/disqualified and ACCC**, where a wrong link publishes an accusation. Identifier links are 1.0; licence numbers 0.95 (licences transfer).
 - Thresholds were not the main lever. In v2, every wrong GLEIF name link scored 0.97 to 1.0 (NZ trusts onto same-name WA trusts; RIO TINTO PLC onto RIO TINTO LIMITED). Gates removed them where no threshold could: jurisdiction, every reference token present, trust postcode/state, no formal-name match through trading-name aliases, reused former names.
-- Result (v4, `m-b5e50f74`): **0 wrong links** on 463 hand labels (precision 100%, recall 92.5% over in-graph records), on our 200-row rehearsal set (100% / 79.8%) and on a held-out set never tuned on (100% / 80.9%).
+- Result (v4, `m-b5e50f74`): **0 wrong links** on 463 labels (precision 100%, recall 92.5% over in-graph records), on our 200-row rehearsal set (100% / 79.8%) and on a held-out set never tuned on (100% / 80.9%).
 - What a customer sees: a **false positive** is a confident, wrong statement about a real company (worst case: a ban or ACCC notice on the wrong business). A **false negative** is a missing fact, shown as an abstention with its reason and best candidate (outputs/abstentions.jsonl). We trade recall for precision deliberately.
 - General-purpose embeddings are poor at entity names (CBA vs Commonwealth Superannuation Corporation: cosine 0.66), so the semantic path is evidence only and decided 0 links. An A/B test (MiniLM vs bge-small, both local and free) found no gain, so the baseline stayed.
 

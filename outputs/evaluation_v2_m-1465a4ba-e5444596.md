@@ -1,6 +1,5 @@
 # Evaluation of matcher version `m-1465a4ba-e5444596`
 
-
 ## 1. Sample and labels
 
 242 labelled records: 171 labelled blind (evidence file only, no score or decision), 71 labelled in a census that was not blind (see notes, section N2). UNSURE: 12, excluded from every metric.

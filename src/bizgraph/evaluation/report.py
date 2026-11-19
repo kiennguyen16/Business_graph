@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime
 from pathlib import Path
 
 import duckdb
@@ -145,9 +144,6 @@ def build_report(con: duckdb.DuckDBPyConnection, version: str, labels_path: Path
     lines: list[str] = []
     w = lines.append
     w(f"# Evaluation of matcher version `{version}`\n")
-    w(f"Generated {datetime.now():%Y-%m-%d %H:%M} by `bizgraph evaluate --version {version}` from "
-      f"`{labels_path.as_posix()}` against the store's stored decisions. Labels are keyed by (source, record_id), "
-      "so the same file scores any matcher version; every number below is recomputed on each run.\n")
 
     # ---------------------------------------------------------------- composition
     w("## 1. Sample and labels\n")
