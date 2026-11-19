@@ -64,6 +64,9 @@ def inject_styles() -> None:
         [data-testid="stSidebar"] button[kind="tertiary"]:disabled { color: var(--teal) !important; font-weight: 700;
             border-left: 3px solid var(--accent) !important; border-radius: 0; opacity: 1; cursor: default; }
         [data-testid="stSidebar"] button[kind="tertiary"]:disabled p { color: var(--teal) !important; }
+        [data-testid="stSidebarContent"] { position: relative; }
+        [data-testid="stSidebar"] .toc-author { position: fixed; bottom: 1.25rem; padding-left: .75rem;
+            font-size: .9rem; font-weight: 600; color: var(--muted); }
         html, body, [class*="css"] { font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
         .block-container { max-width: 1440px; padding-top: 2.2rem; padding-bottom: 3rem; }
         h1, h2, h3 { color: var(--ink); letter-spacing: -0.025em; }
@@ -684,6 +687,7 @@ def main() -> None:
     for p in PAGES:
         st.sidebar.button(p, key=f"toc_{p}", type="tertiary", disabled=(p == page),
                           on_click=lambda p=p: ss.update(nav_to=p))
+    st.sidebar.markdown('<div class="toc-author">Kien Nguyen</div>', unsafe_allow_html=True)
     {"Resolve": page_resolve, "Entity": page_entity, "Traversals": page_traversals,
      "Abstentions": page_abstentions, "Projection": page_projection}[page](b)
 
