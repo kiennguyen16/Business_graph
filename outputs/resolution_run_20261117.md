@@ -77,8 +77,8 @@ Also in v3:
 
 ### Precision on the evaluation labels
 
-The evaluation agent's 242 labels (`labels/labels_m-1465a4ba-e5444596.csv`) re-scored mechanically
-against v3 (the evaluation agent will re-score independently):
+The 242 evaluation labels (`labels/labels_m-1465a4ba-e5444596.csv`) re-scored mechanically
+against v3:
 
 | | v2 | v3 |
 |---|---|---|
@@ -324,7 +324,7 @@ Changes from v1 to v2 (all in `src/bizgraph/resolution/`; rules are written in `
 1. All-token gate (R5a): every meaningful reference token, generic ones included, must be in the
    candidate's name or one alias; candidate extra tokens lower the fuzzy score symmetrically (Jaccard
    over all tokens). Australian geography words are exempt for informal references only. NZ is not
-   exempt (deviation from the instruction): `X (NZ) LIMITED` and the Australian X are different
+   exempt: `X (NZ) LIMITED` and the Australian X are different
    entities in the GLEIF data.
 2. Person-shaped UNKNOWN references (`John Smith`: given name plus known surnames, no legal form, no
    business word) are treated as persons, so never linked on a name alone; `asic_liquidator` defaults

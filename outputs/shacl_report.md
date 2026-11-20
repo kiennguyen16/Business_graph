@@ -1,5 +1,9 @@
 # SHACL and published-store report
 
+> **Version note.** Measurements below were taken on the v3 store (`m-94f4f6b2-d37e44c6`). The final
+> v4 matcher (`m-b5e50f74-d37e44c6`) removed the wrong reused-former-name link; see README
+> [Final results](../README.md#final-results). These measurements have not been rerun for v4.
+
 Date: 2026-11-18. Matcher: `m-94f4f6b2-d37e44c6`. Input: `data/snap_v3_publish.duckdb`, opened read-only.
 
 **Conforms: true.** Jena 5.5.0 on portable Java 21 validated 3,860,680 input triples in 42.09 s (measured), with 0 results and no memory failures. One JVM at a time, maximum heap 3 GB.
@@ -34,7 +38,7 @@ tools/jdk-21.0.13+9/bin/java.exe -Xmx3g -cp "tools/apache-jena-5.5.0/lib/*" shac
 
 ## Offline store verification
 
-All 13 graph counts exactly match their exports: **29,848,624 triples**. The offline query took 11.44 s (measured). Only the latest source snapshots and the requested matcher version are published.
+All 13 graph counts exactly match their exports: **29,848,624 triples**. The offline query took 11.44 s (measured). Only the latest source snapshots and the selected matcher version are published.
 
 | Named graph | Stored triples |
 |---|---:|
@@ -57,13 +61,13 @@ SELECT ?g (COUNT(*) AS ?triples)
 WHERE { GRAPH ?g { ?s ?p ?o } } GROUP BY ?g ORDER BY ?g
 ```
 
-Run with `tools/jdk-21.0.13+9/bin/java.exe -Xmx3g -cp "tools/apache-jena-5.5.0/lib/*" tdb2.tdbquery --loc=data/tdb2 --query=data/rdf/published/graph_counts.rq --results=JSON`. No Fuseki HTTP server was started, per the revised instruction. Every JVM exited before the next started.
+Run with `tools/jdk-21.0.13+9/bin/java.exe -Xmx3g -cp "tools/apache-jena-5.5.0/lib/*" tdb2.tdbquery --loc=data/tdb2 --query=data/rdf/published/graph_counts.rq --results=JSON`. Counts were verified offline with tdbquery; no Fuseki server was needed. Every JVM exited before the next started.
 
 Loading used a newly created empty `data/tdb2`.
 
 ## Load-report definitions and tests
 
-`outputs/load_report.csv` has exactly the requested six columns. Nodes are distinct IRI subjects; edges are distinct IRI-valued triples excluding `rdf:type`. Counts are computed from the exported triples whose store counts were verified above. Ingest rejection totals are taken from each latest source snapshot; ASIC export trimming is a publication scope choice, not an ingest rejection. Canonical, links and licence history rows use the `derived:` prefix; ontology is not an input-source row.
+`outputs/load_report.csv` has six columns. Nodes are distinct IRI subjects; edges are distinct IRI-valued triples excluding `rdf:type`. Counts are computed from the exported triples whose store counts were verified above. Ingest rejection totals are taken from each latest source snapshot; ASIC export trimming is a publication scope choice, not an ingest rejection. Canonical, links and licence history rows use the `derived:` prefix; ontology is not an input-source row.
 
 Regression coverage includes canonical ACN, enrichment record ID, Tier 2 ACN, Tier 3 ACN, GLEIF trustee ACN, identifier-table ACN, quarantine evidence, exclusion of unrelated companies, and the export-all override.
 

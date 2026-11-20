@@ -1,7 +1,9 @@
 # Performance
 
-> **Version note.** Load, export, SHACL and storage figures were measured on the v3 store. The final
-> matcher v4 (`m-b5e50f74`) uses the same pipeline and data. Measured v4 resolve latency on the 200 messy
+> **Version note.** Load, export, SHACL and storage figures were measured on the v3 store
+> (`m-94f4f6b2-d37e44c6`). The final v4 matcher (`m-b5e50f74-d37e44c6`) removed the wrong
+> reused-former-name link; see README [Final results](../README.md#final-results). These store
+> measurements have not been rerun for v4. Measured v4 resolve latency on the 200 messy
 > rehearsal references (`outputs/resolve_results.jsonl`, `latency_ms`): p50 285 ms, p95 419 ms, max 668 ms
 > (v3 on its 200-string recipe: p50 188 ms, p95 224 ms). The cost estimate below scales with latency, so
 > at v4's p50 it is about USD 0.016 per 1,000 resolutions.
