@@ -238,5 +238,57 @@
     "Large graphs are sampled, not fully validated; global uniqueness outside the sample is not proven.",
     "Fuseki HTTP startup was skipped; counts were obtained offline."
   ],
-  "memory_failures": []
+  "memory_failures": [],
+  "v4_revalidation": {
+    "date": "2026-11-20",
+    "matcher_version": "m-b5e50f74-d37e44c6",
+    "note": "Only the links graph depends on the matcher; v3 links graph swapped for v4 in the SHACL union and in the TDB2 store.",
+    "export_seconds": 14.46,
+    "links_triples_exported": 505808,
+    "shacl": {
+      "conforms": true,
+      "results": 0,
+      "triples_validated": 3862238,
+      "seconds": 36.72,
+      "assembly_s": 20.53,
+      "union_file": "data/rdf/v4/shacl_work/final_union_v4.nt",
+      "removed_v3_links": 505831,
+      "added_v4_links": 505808,
+      "closure": {
+        "urn:graph:canonical": {
+          "subjects": 55,
+          "triples": 752
+        },
+        "urn:graph:source:abr:2026-11-11": {
+          "subjects": 55,
+          "triples": 673
+        },
+        "urn:graph:source:asic_company:2026-11-09": {
+          "subjects": 13,
+          "triples": 156
+        }
+      }
+    },
+    "store": {
+      "load_s": 13.31,
+      "drop_v3_graph_s": 9.31,
+      "offline_count_seconds": 12.1,
+      "stored_graph_counts": {
+        "urn:graph:canonical": 11789763,
+        "urn:graph:derived:licence_history": 13126,
+        "urn:graph:links:m-b5e50f74-d37e44c6": 505808,
+        "urn:graph:ontology": 929,
+        "urn:graph:source:abr:2026-11-11": 13098624,
+        "urn:graph:source:accc_notice:2026-11-17": 426,
+        "urn:graph:source:asic_afsl:2026-11-11": 149492,
+        "urn:graph:source:asic_banned_org:2026-11-09": 221,
+        "urn:graph:source:asic_company:2026-11-09": 3123515,
+        "urn:graph:source:asic_credit:2026-11-15": 127460,
+        "urn:graph:source:asic_liquidator:2026-11-09": 14383,
+        "urn:graph:source:gleif_l1:2026-11-16": 940056,
+        "urn:graph:source:gleif_l2:2026-11-16": 84798
+      },
+      "total_triples": 29848601
+    }
+  }
 }

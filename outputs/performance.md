@@ -1,9 +1,10 @@
 # Performance
 
-> **Version note.** Load, export, SHACL and storage figures were measured on the v3 store
-> (`m-94f4f6b2-d37e44c6`). The final v4 matcher (`m-b5e50f74-d37e44c6`) removed the wrong
-> reused-former-name link; see README [Final results](../README.md#final-results). These store
-> measurements have not been rerun for v4. Measured v4 resolve latency on the 200 messy
+> **Version note.** The full ingest, export and load timings below were measured with the v3 matcher
+> (`m-94f4f6b2-d37e44c6`). The final v4 matcher (`m-b5e50f74-d37e44c6`) changes only the links graph, so
+> on 2026-11-20 that graph was re-exported (14.46 s), swapped into the store (load 13.31 s, drop v3
+> graph 9.31 s), re-validated with SHACL (36.72 s, 3,862,238 triples, conforms) and re-counted (12.10 s,
+> 29,848,601 triples); see `shacl_report.md`. Disk sizes are from the v3 load. Measured v4 resolve latency on the 200 messy
 > rehearsal references (`outputs/resolve_results.jsonl`, `latency_ms`): p50 285 ms, p95 419 ms, max 668 ms
 > (v3 on its 200-string recipe: p50 188 ms, p95 224 ms). The cost estimate below scales with latency, so
 > at v4's p50 it is about USD 0.016 per 1,000 resolutions.
@@ -24,7 +25,7 @@
 
 Ingest values are latest `source_snapshot.wall_clock_s`; ABR uses external wall time **6m16.443s, 4 workers**, including conflict preflight (adapter alone 249.99s). `data/logs/final_refresh_20261117_1739.log` measures canonical build **2m15.082s**, match-all **3m31.250s**, and the final per-source matches above. Earlier v3 timings in `outputs/resolution_run_20261117.md`: AFSL 4.9s, credit 3.9s, banned 0.4s, liquidators 4.8s, GLEIF L1 131.8s, ACCC 0.5s; these precede the final refresh.
 
-All 13 graphs: export **93.74s**, sequential offline bulk load via `scripts/bulk_load.sh` **348.35s**. Canonical export/load 38.79/102.87s. Offline count verification **11.44s**, 29,848,624 triples; all counts match. Counts were verified offline rather than through Fuseki HTTP. SHACL **42.09s**, plus 24.24s sample assembly; 3,860,680 triples conform (scope in `shacl_report.md`).
+Full v3 run, all 13 graphs: export **93.74s**, sequential offline bulk load via `scripts/bulk_load.sh` **348.35s**. Canonical export/load 38.79/102.87s. Offline count verification **11.44s**, 29,848,624 triples; all counts match. Counts were verified offline rather than through Fuseki HTTP. SHACL **42.09s**, plus 24.24s sample assembly; 3,860,680 triples conform (scope in `shacl_report.md`).
 
 Allocated disk bytes (Windows GetCompressedFileSizeW): DuckDB **4,828,704,768** (4.50 GiB); TDB2 **14,803,088,844** (13.79 GiB). Logical sizes: 4,828,704,768 / 14,803,088,844 bytes.
 
