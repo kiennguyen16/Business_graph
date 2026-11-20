@@ -53,7 +53,7 @@ Principle carried through every FR: **source records are immutable and never del
 | T0.5 | Download Tier 2: AFS licensee, credit licensee, banned/disqualified, liquidator, GLEIF L1 + L2 (AU/NZ filter) | T0.1 |
 | T0.6 | Acquire Tier 3: ACCC register scrape, TGA ARTG 4 CSV chunks, small annualreports.com PDF sample (subsidiary notes) | T0.1, T0.3 (only what licence allows) |
 | T0.7 | Define and apply Tier 1 slice (active status + state and/or ANZSIC divisions) targeting ~1M entities; record the exact filter | T0.4 |
-| T0.8 | Locate / confirm `dirty_references.jsonl` (200 rows, 12 not in graph). **Not in the repo yet: ask the hiring team** | none |
+| T0.8 | Locate / confirm `dirty_references.jsonl` (200 rows, 12 not in graph). **Not in the repo yet: request the file** | none |
 
 ### FR1. Ontology (OWL + SHACL)
 

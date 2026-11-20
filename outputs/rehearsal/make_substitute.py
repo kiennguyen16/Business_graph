@@ -1,4 +1,4 @@
-"""Build our own 200-row stand-in for the hiring team's `dirty_references.jsonl`.
+"""Build a 200-row stand-in for `dirty_references.jsonl`.
 
     .venv/Scripts/python outputs/rehearsal/make_substitute.py [--db data/snap_v3_rehearsal.duckdb] [--seed 20261118]
 

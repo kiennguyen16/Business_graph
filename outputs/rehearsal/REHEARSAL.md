@@ -1,11 +1,11 @@
 # Blind-test rehearsal for `resolve_results.jsonl`
 
-**This set is ours, not the hiring team's.** The brief's `dirty_references.jsonl` (200 rows, 12 not
-in the graph) was never supplied. To rehearse the blind run, an agent that did not build the matcher
+**This set is mine.** The brief's `dirty_references.jsonl` (200 rows, 12 not
+in the graph) was not supplied. To rehearse the blind run, an AI labeller that did not build the matcher
 built a stand-in of the same shape from the raw registers, wrote the answer key separately, ran the
 resolver once and scored it. Nothing in the matcher, its thresholds or its gates was changed after
-seeing these results. The numbers below say how v3 behaves on *our* idea of a dirty reference; the
-hiring team's file will differ.
+seeing these results. The numbers below say how v3 behaves on *my* idea of a dirty reference; the
+real file will differ.
 
 ## The set
 
@@ -98,9 +98,9 @@ Patterns seen in the abstention explanations, each a candidate normaliser improv
 
 All six are abstentions, the safe error. A customer sees "not found" rather than a wrong company.
 
-## Running it on the hiring team's file
+## Running it on the supplied file
 
-`outputs/resolve_results.jsonl` currently holds this rehearsal run on our substitute set, not the
+`outputs/resolve_results.jsonl` currently holds this rehearsal run on my substitute set, not the
 brief's references; the command below overwrites it.
 
 ```
@@ -119,6 +119,6 @@ appended when given as separate fields. A row that cannot be read is written as 
 `latency_ms`) followed by the decision detail and an `input` echo of the original row. The command
 prints counts by decision and p50 / p95 latency. `--limit N` and `--k N` are available.
 
-To score our substitute again: run the command above on
+To score my substitute again: run the command above on
 `outputs/rehearsal/dirty_references_substitute.jsonl`, then
 `.venv/Scripts/python outputs/rehearsal/score.py outputs/resolve_results.jsonl outputs/rehearsal/answer_key.jsonl`.
