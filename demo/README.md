@@ -1,6 +1,6 @@
 # Demo
 
-A plain Streamlit app over the real store, the v3 matcher and the published graph. Five pages:
+A plain Streamlit app over the real store, the v4 matcher and the published graph. Five pages:
 
 | Page | What it shows | Code it calls |
 |---|---|---|
@@ -10,35 +10,40 @@ A plain Streamlit app over the real store, the v3 matcher and the published grap
 | Abstentions | Every abstention of the demo matcher version by source and reason (with a glossary of reasons, JURISDICTION_MISMATCH included), record name, best candidate, score, explanation; the stored evidence for one record rendered as the same gate table | DuckDB `abstention` |
 | Projection | The named specs, including the brief's "ACCC notice AND AFSL cancelled in the last 3 months": the combined result, each half on its own with its query text, and why the answer is 0 rows | `ProjectionService` |
 
-The header on every page says what is real and what is reduced; the sidebar shows the store, the
-matcher version, where `licence_event` came from, how the resolution index was obtained and the
-start-up timings.
+The sidebar contains page navigation. The header reports live and stored matcher versions when
+they differ; inbound links and graph results identify the stored matcher or links graph.
 
 ## What is real, what is stubbed
 
-* Real: the DuckDB store (opened read-only), the stored decisions of matcher **v3**
-  `m-94f4f6b2-d37e44c6` (the default; `BIZGRAPH_MATCHER_VERSION` picks another), live `resolve`
-  under v3's stored threshold policy, SPARQL over graphs exported by `RdfExporter`, `licence_event`
+* Real: the DuckDB store (opened read-only), the stored decisions of matcher **v4**
+  `m-b5e50f74-d37e44c6` (the default when present; `BIZGRAPH_MATCHER_VERSION` picks another), live `resolve`
+  under v4's stored threshold policy, SPARQL over graphs exported by `RdfExporter`, `licence_event`
   from the store.
-* The semantic (embedding) path is ON in the hosted Docker demo. The image bakes the CPU
-  `all-MiniLM-L6-v2` model and sets `BIZGRAPH_EMBEDDER=auto`; stored decisions are shown as v3 made them.
+* The semantic (embedding) path is enabled by default when the local model is available. The Docker image bakes the CPU
+  `all-MiniLM-L6-v2` model and sets `BIZGRAPH_EMBEDDER=auto`; stored decisions are shown as v4 made them.
 * Live code version: `resolve` runs the code in `src/`. If the stored resolution index predates that
   code, the app rebuilds the index in memory over read-only views of the file (the file is never
-  written) and says so in the sidebar.
+  written).
 * Reduced in the hosted bundle: a subset of parties (below), so a query for a name outside it finds
   fewer candidates than the full store. Corpus statistics (name uniqueness, token IDF, block sizes,
-  person vocabulary) are copied from the full index, and on the example queries the bundle gives the
-  same decisions, scores and candidate counts as the full store.
+  person vocabulary) are copied from the full index. The builder retains full-matcher candidates
+  for the examples; the historical v3 comparison found matching decisions, scores and candidate counts.
 * Data limits stated in the app: ACCC notices are the 20-row register extract; a cancelled licence's
   end date is a bound (last snapshot that showed it, first snapshot without it); no person-level
   director data, so "within 2 hops of a banned party" is 0 on real data.
 
 ## Run it locally
 
-Store: `data/snap_v3_demo.duckdb` by default (`BIZGRAPH_SNAPSHOT` names another file under `data/`,
-`BIZGRAPH_DB` any path). It is only ever opened read-only.
+Store selection: `BIZGRAPH_DB` overrides the path; otherwise an existing bundle database is used,
+with `data/snap_v3_demo.duckdb` as the local fallback (`BIZGRAPH_SNAPSHOT` names another file under
+`data/`). This is a file name, not a claim that it contains v4. Stores are opened read-only.
+Without a cached bundle or local fallback, the app downloads the default v4 release. An explicit
+bundle URL also selects a download when no bundle is cached.
 
-**A. Full v3 store + your own Fuseki (everything live).**
+**A. Local snapshot + your own Fuseki (everything live).**
+
+These commands retain the historical snapshot file name and v3 timing estimates. Point the
+export command and `BIZGRAPH_DB` at a store containing v4 to serve the final matcher.
 
 ```bash
 python demo/export_graphs.py --db data/snap_v3_demo.duckdb --out /tmp/bizgraph_nq --nq   # ~1 min
@@ -50,10 +55,10 @@ FUSEKI_URL=http://localhost:3096 BIZGRAPH_DB=data/snap_v3_demo.duckdb streamlit 
 **B. The demo bundle (what a free tier runs).**
 
 ```bash
-python demo/build_demo_snapshot.py                     # ~100 s, writes demo/bundle (72 MB)
+python demo/build_demo_snapshot.py --src data/bizgraph.duckdb  # source of the published v4 bundle
 # precompute the heavy traversals for hosts without Java (any Fuseki, once, at build time):
 FUSEKI_PORT=3096 TDB2_LOC=/tmp/bundle_tdb2 bash scripts/fuseki.sh &
-python demo/load_fuseki.py --url http://localhost:3096  # 867k triples, ~20 s
+python demo/load_fuseki.py --url http://localhost:3096  # loads the bundle manifest's graphs
 python demo/precompute.py  --url http://localhost:3096  # ~5 s, writes demo/bundle/precomputed.pkl
 # then, with Fuseki (everything live):
 FUSEKI_URL=http://localhost:3096 streamlit run demo/app.py
@@ -69,34 +74,47 @@ other ownership chains live (about 20 s), and runs the graph half of any other e
 asked (about a minute, without the same-identifier widening). The store half of every page is
 always live.
 
-Environment variables: `BIZGRAPH_DB`, `BIZGRAPH_SNAPSHOT`, `BIZGRAPH_MATCHER_VERSION` (default v3),
+Environment variables: `BIZGRAPH_DB`, `BIZGRAPH_SNAPSHOT`, `BIZGRAPH_MATCHER_VERSION` (v4 when present,
+otherwise the latest full-run version in the store),
 `FUSEKI_URL`, `BIZGRAPH_BUNDLE_DIR`, `BIZGRAPH_BUNDLE_URL` (download the bundle tarball at start-up
 when it is not on disk), `BIZGRAPH_RDF_DIR`, `BIZGRAPH_MEMORY_LIMIT` (default 2GB), `BIZGRAPH_THREADS`
 (default 2), `BIZGRAPH_TEMP_DIR`, `BIZGRAPH_EMBEDDER=auto`, `BIZGRAPH_AS_OF`.
 
 ## The demo bundle (`demo/build_demo_snapshot.py`)
 
-The full store is 4.8 GB and does not fit a free tier. The builder opens the v3 store read-only and
+The full store is 4.8 GB and does not fit a free tier. The builder opens the selected source store read-only and
 writes `demo/bundle/`: a trimmed DuckDB with the same schema, `licence_event` as parquet, the published
 graphs exported from the trimmed store (so graph and store agree) as gzipped N-Triples with a
 manifest, and `build_info.json` recording what was kept and why.
 
-Parties kept (19,405): everything linked from a Tier 2/3 source and the best candidate of every Tier
-2/3 abstention; the GLEIF ownership slice (every L1 record on an L2 edge, which with v3 includes the
+Parties kept by the builder: everything linked from a Tier 2/3 source and the best candidate of every Tier
+2/3 abstention; the GLEIF ownership slice (every L1 record on an L2 edge, which includes the
 foreign parents, the parties those records link to, parties sharing their LEI / ABN / ACN);
 licence-event holders; every candidate the full matcher generates for the example queries; the
 example entities; the best candidate of every GLEIF abstention refused by a gate
 (JURISDICTION_MISMATCH, AMBIGUOUS, IDENTIFIER_CONFLICT, PARTY_TYPE_CONFLICT, QUARANTINED_TARGET);
 quarantined parties; a seeded random sample of 5,000 organisations.
 
-Links and abstentions (v3 only): all Tier 2/3; for GLEIF, every L1 record in the ownership slice,
+Links and abstentions (selected matcher version only): all Tier 2/3; for GLEIF, every L1 record in the ownership slice,
 every L1 record linked to a kept party, and every gate abstention, each with its source records. So
-an entity page lists all of its linked records (checked against the full store for CBA, CSC,
+an entity page lists its linked records (the historical v3 comparison checked against the full store for CBA, CSC,
 Macquarie Group, Macquarie Bank, Macquarie International Finance, Westpac and the three Citigroup
 parties: identical link counts), and the Citigroup (6 hops) and Macquarie chains walk to the same
 tops as on the full graph.
 
-| Bundle (v3) | |
+The published `demo-bundle-v4` archive was inspected directly: `build_info.json` records source
+`data/bizgraph.duckdb` and matcher `m-b5e50f74-d37e44c6`; `rdf/manifest.json` agrees.
+Its DuckDB contains 15,347 links and 2,758 abstentions, all for v4, although matcher metadata also
+retains older versions. It has 19,486 parties, 33,727 identifiers, 30,952 aliases, 72,909 source
+records, 2,532 licence events and 69 quarantine rows. The RDF manifest lists 871,864 triples,
+including 140,238 in the v4 links graph. Source graphs are dated 2026-11-09 (ASIC banned
+organisations and liquidators), 2026-11-11 (AFSL), 2026-11-15 (credit), 2026-11-16 (GLEIF L1/L2)
+and 2026-11-17 (ACCC). The archive is 24,207,760 bytes; build metadata records 73.6 MB of files
+and 99.5 s total build time. These are release metadata, not new performance measurements.
+
+The following table records the historical v3 build, not the published v4 bundle.
+
+| Historical bundle (v3) | |
 |---|---|
 | Rows | 19,405 parties, 33,587 identifiers, 30,574 aliases, 15,303 links, 2,653 abstentions, 72,473 source records, 2,532 licence events, 69 quarantine rows |
 | Graphs | 867,389 triples |
@@ -110,10 +128,14 @@ main repository:
 tar -czf bizgraph_demo_bundle.tar.gz -C demo bundle     # on Git Bash for Windows add --force-local
 ```
 
-## Hosting (not deployed: the steps)
+## Hosting
 
-**Hugging Face Spaces, Docker SDK (recommended).** The free CPU tier (2 vCPU, 16 GB RAM) runs Java,
-so the image serves the bundle through an embedded Fuseki and every page is live.
+The public demo is https://kien-nguyen-graph.streamlit.app/. The default download is the
+`demo_bundle.tar.gz` asset of the `demo-bundle-v4` GitHub release. A cached bundle or configured
+`BIZGRAPH_BUNDLE_URL` can override it.
+
+**Hugging Face Spaces, Docker SDK (alternative setup).** The image supports Java, so it can
+serve the bundle through an embedded Fuseki with live graph queries.
 
 1. Build the bundle and precompute (mode B above).
 2. Create a Space with SDK "Docker".
@@ -138,14 +160,14 @@ so the image serves the bundle through an embedded Fuseki and every page is live
 1. Publish the bundle tarball somewhere public (for example a GitHub release asset).
 2. New app from the GitHub repository; main file `demo/app.py`. Dependencies come from
    `demo/requirements.txt`; Python 3.12.
-3. In the app's secrets / environment set `BIZGRAPH_BUNDLE_URL` to the tarball URL: the app downloads
+3. Optionally set `BIZGRAPH_BUNDLE_URL` in secrets / environment to override the default v4 release: the app downloads
    and unpacks it on first start (24 MB).
-4. Expect about 40 s to start and a peak of about 2.0 GB of memory (rdflib holds the graphs); check the
+4. Historical v3 measurements were about 40 s to start and a peak of about 2.0 GB of memory (rdflib holds the graphs); check the
    tier's current memory limit. Example traversals come from the precomputed results; other graph
    views are slow (mode B).
 
 See [STREAMLIT_CLOUD.md](STREAMLIT_CLOUD.md) for exact Streamlit Cloud setup. Docker Spaces are paid; use Streamlit Cloud or docker compose. See [HUGGINGFACE.md](HUGGINGFACE.md) for the Docker setup, bundle options, environment
-variables, timings, and troubleshooting. The hosted Docker demo has the semantic path ON.
+variables, timings, and troubleshooting. The Docker configuration enables the semantic path.
 
 ## Docker (fallback to hosting)
 
@@ -182,10 +204,10 @@ DuckDB memory_limit 2 GB, 2 threads). Every page ran without an exception in all
 | Projection page (spec + both halves) | 1.9 s | 0.24 s | 0.70 s |
 | Abstentions page / one record's evidence | 0.12 to 0.41 s / 0.12 s | 0.08 to 0.18 s / 0.13 s | 0.06 to 0.12 s / 0.07 s |
 
-The three modes return the same answers: CSCAL to Citigroup Inc. in 6 hops (GLEIF agrees), 128
+In these historical v3 measurements, the three modes returned the same answers: CSCAL to Citigroup Inc. in 6 hops (GLEIF agrees), 128
 foreign-controlled licensees (3 of them EQT, wrongly placed in GI by the GLEIF country field), 5
 licensed entities sharing a group with a flagged entity (TP ICAP and Citigroup groups), 1 ownership
-chain ending in CYCLE (left out of every group, see `outputs/graph_queries.md`), 49 neighbours of
+chain ending in CYCLE (left out of every group; v4 reports this as IDENTITY_COLLAPSE, see `outputs/graph_queries.md`), 49 neighbours of
 Macquarie Group at 2 hops, and 0 projection rows (ACCC half 5 parties, AFSL-cancelled half 198, none
 in common).
 

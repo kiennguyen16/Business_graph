@@ -91,7 +91,7 @@ def connect_ro(path: Path | str):
 
 
 def matcher_version(con: Any) -> str:
-    """BIZGRAPH_MATCHER_VERSION, else v3 (DEFAULT_MATCHER_VERSION) when the store has it, else the
+    """BIZGRAPH_MATCHER_VERSION, else v4 (DEFAULT_MATCHER_VERSION) when the store has it, else the
     latest full-run 'm-' version (not a strip-identifier experiment, not a redecide)."""
     env = os.environ.get("BIZGRAPH_MATCHER_VERSION")
     if env:
